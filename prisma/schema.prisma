@@ -1,0 +1,294 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  role         UserRole @default(USER)
+  avatar       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  projects           Project[]
+  notifications      Notification[]
+  sessions           Session[]
+  panelStatusChanges PanelStatusHistory[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Project {
+  id          Int           @id @default(autoincrement())
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  createdBy   String        @map("created_by")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  // Current active model (one-to-one relationship)
+  currentModelId String? @unique @map("current_model_id")
+
+  // Metadata
+  metadata Json? // Flexible project metadata
+
+  // Relations
+  owner         User           @relation(fields: [createdBy], references: [id])
+  currentModel  Model?         @relation("ProjectCurrentModel", fields: [currentModelId], references: [id])
+  modelHistory  Model[]        @relation("ProjectModelHistory")
+  groups        Group[]
+  panels        Panel[]        // Panels in this project
+
+  @@map("projects")
+}
+
+model Model {
+  id               String      @id @default(cuid())
+  projectId        Int         @map("project_id")
+  originalFilename String      @map("original_filename")
+  storageKey       String      @map("storage_key") // S3/MinIO object key
+  type             ModelType   @default(FRAG)
+  sizeBytes        BigInt      @map("size_bytes")
+  status           ModelStatus @default(READY) // FRAG files are instantly ready!
+  
+  // Version information
+  version          Int         @default(1) // Model version number
+  isActive         Boolean     @default(true) @map("is_active") // Is this the current active version?
+  replacedById     String?     @unique @map("replaced_by_id") // ID of the model that replaced this one
+  
+  // FRAG files don't need processing - they're ready immediately!
+  processingProgress Int?    @default(100) @map("processing_progress") // Always 100% for FRAG
+  errorMessage      String? @map("error_message")
+  
+  // FRAG Metadata (for 3D viewer integration)
+  elementCount     Int?  @map("element_count") // Can be extracted from FRAG if needed
+  spatialStructure Json? @map("spatial_structure") // Building hierarchy from FRAG
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project         Project        @relation("ProjectModelHistory", fields: [projectId], references: [id], onDelete: Cascade)
+  currentProject  Project?       @relation("ProjectCurrentModel") // If this is the current active model
+  replacedBy      Model?         @relation("ModelReplacement", fields: [replacedById], references: [id])
+  replaces        Model?         @relation("ModelReplacement")
+  elements        ModelElement[]
+  panels          Panel[]        // Panels linked to this model
+
+  @@map("models")
+}
+
+model ModelElement {
+  id        String @id @default(cuid())
+  modelId   String @map("model_id")
+  expressId Int    @map("express_id") // IFC Express ID
+  globalId  String @map("global_id")  // IFC GlobalId
+  ifcType   String @map("ifc_type")   // IfcWall, IfcDoor, etc.
+  
+  // Spatial context
+  storey String? // Building storey
+  space  String? // Space/room
+  
+  // Geometry (bounding box)
+  bbox Json? // {min: [x,y,z], max: [x,y,z]}
+  
+  // Properties (flexible JSONB for all IFC properties)
+  properties Json? // All Psets, Qtos, and basic properties
+  
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  model  Model   @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  panels Panel[] // Panels linked to this element
+
+  @@unique([modelId, expressId])
+  @@index([modelId, ifcType])
+  @@index([modelId, storey])
+  @@map("model_elements")
+}
+
+model Group {
+  id          String      @id @default(cuid())
+  projectId   Int         @map("project_id")
+  name        String
+  description String?
+  status      GroupStatus @default(PENDING)
+  
+  // Group metadata
+  elementIds Json? @map("element_ids") // Array of element IDs in this group
+  metadata   Json? // Flexible group metadata
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  panels  Panel[] // Panels in this group
+
+  @@map("groups")
+}
+
+// Panel Management Models
+model Panel {
+  id          String      @id @default(cuid())
+  projectId   Int         @map("project_id")
+  modelId     String?     @map("model_id") // Optional link to model
+  elementId   String?     @map("element_id") // Optional link to model element
+  
+  // Panel identification
+  name        String      // Panel name/identifier
+  tag         String?     // Panel tag/code
+  objectType  String?     @map("object_type") // Type of panel (Concrete, Steel, etc.)
+  
+  // Panel properties
+  dimensions  String?     // Panel dimensions
+  location    String?     // Panel location
+  material    String?     // Panel material
+  weight      Float?      // Panel weight
+  area        Float?      // Panel area
+  
+  // Status and group assignment
+  status      PanelStatus @default(PLANNING)
+  groupId     String?     @map("group_id")
+  
+  // Manufacturing and logistics
+  productionDate    DateTime? @map("production_date")
+  shippingDate      DateTime? @map("shipping_date")
+  installationDate  DateTime? @map("installation_date")
+  
+  // Additional metadata
+  notes       String?     // Panel notes
+  metadata    Json?       // Flexible panel metadata
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  model         Model?        @relation(fields: [modelId], references: [id])
+  element       ModelElement? @relation(fields: [elementId], references: [id])
+  group         Group?        @relation(fields: [groupId], references: [id])
+  statusHistory PanelStatusHistory[]
+
+  @@index([projectId, status])
+  @@index([projectId, groupId])
+  @@index([modelId])
+  @@map("panels")
+}
+
+model PanelStatusHistory {
+  id        String      @id @default(cuid())
+  panelId   String      @map("panel_id")
+  status    PanelStatus
+  notes     String?     // Notes about status change
+  changedBy String?     @map("changed_by") // User who changed the status
+  
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  panel Panel @relation(fields: [panelId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [changedBy], references: [id])
+
+  @@map("panel_status_history")
+}
+
+model Notification {
+  id      String           @id @default(cuid())
+  userId  String           @map("user_id")
+  type    NotificationType
+  title   String
+  message String
+  read    Boolean          @default(false)
+  
+  // Optional metadata
+  metadata Json? // Additional notification data
+  
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// Enums
+enum UserRole {
+  USER
+  ADMIN
+  MANAGER
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum ModelType {
+  FRAG  // Primary 3D format - instantly ready for viewing!
+  // Removed IFC - using FRAG viewer exclusively now
+}
+
+enum ModelStatus {
+  UPLOADED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum GroupStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  ON_HOLD
+}
+
+enum PanelStatus {
+  PLANNING
+  DESIGNED
+  APPROVED
+  IN_PRODUCTION
+  MANUFACTURED
+  QUALITY_CHECK
+  SHIPPED
+  ON_SITE
+  INSTALLED
+  COMPLETED
+  ON_HOLD
+  REJECTED
+}
+
+enum NotificationType {
+  SYSTEM
+  PROJECT_UPDATE
+  MODEL_PROCESSED
+  GROUP_STATUS_CHANGE
+  USER_MENTION
+}
