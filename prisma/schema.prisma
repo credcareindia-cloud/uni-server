@@ -25,6 +25,7 @@ model User {
   notifications      Notification[]
   sessions           Session[]
   panelStatusChanges PanelStatusHistory[]
+  panelCustomStatusAssignments PanelCustomStatus[]
 
   @@map("users")
 }
@@ -63,6 +64,7 @@ model Project {
   modelHistory  Model[]        @relation("ProjectModelHistory")
   groups        Group[]
   panels        Panel[]        // Panels in this project
+  customStatuses CustomStatus[] // Custom statuses for this project
 
   @@map("projects")
 }
@@ -173,8 +175,9 @@ model Panel {
   area        Float?      // Panel area
   
   // Status and group assignment
-  status      PanelStatus @default(PLANNING)
-  groupId     String?     @map("group_id")
+  status          PanelStatus   @default(READY_FOR_PRODUCTION)
+  customStatusId  String?       @map("custom_status_id") // Deprecated: kept for backward compatibility
+  groupId         String?       @map("group_id")
   
   // Manufacturing and logistics
   productionDate    DateTime? @map("production_date")
@@ -193,12 +196,54 @@ model Panel {
   model         Model?        @relation(fields: [modelId], references: [id])
   element       ModelElement? @relation(fields: [elementId], references: [id])
   group         Group?        @relation(fields: [groupId], references: [id])
+  customStatus  CustomStatus? @relation("PanelSingleStatus", fields: [customStatusId], references: [id])
+  customStatuses PanelCustomStatus[] // Many-to-many relation for multiple custom statuses
   statusHistory PanelStatusHistory[]
 
   @@index([projectId, status])
   @@index([projectId, groupId])
+  @@index([projectId, customStatusId])
   @@index([modelId])
   @@map("panels")
+}
+
+model CustomStatus {
+  id          String   @id @default(cuid())
+  projectId   Int      @map("project_id")
+  name        String
+  icon        String   @default("circle")
+  color       String   @default("#3B82F6")
+  description String?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  panels  Panel[] @relation("PanelSingleStatus") // Deprecated single status relation
+  panelStatuses PanelCustomStatus[] // Many-to-many relation
+
+  @@index([projectId])
+  @@map("custom_statuses")
+}
+
+// Junction table for many-to-many relationship between Panels and CustomStatuses
+model PanelCustomStatus {
+  id             String       @id @default(cuid())
+  panelId        String       @map("panel_id")
+  customStatusId String       @map("custom_status_id")
+  assignedAt     DateTime     @default(now()) @map("assigned_at")
+  assignedBy     String?      @map("assigned_by") // User who assigned the status
+
+  // Relations
+  panel        Panel        @relation(fields: [panelId], references: [id], onDelete: Cascade)
+  customStatus CustomStatus @relation(fields: [customStatusId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [assignedBy], references: [id])
+
+  @@unique([panelId, customStatusId]) // Prevent duplicate assignments
+  @@index([panelId])
+  @@index([customStatusId])
+  @@map("panel_custom_statuses")
 }
 
 model PanelStatusHistory {
@@ -271,18 +316,12 @@ enum GroupStatus {
 }
 
 enum PanelStatus {
-  PLANNING
-  DESIGNED
-  APPROVED
-  IN_PRODUCTION
-  MANUFACTURED
-  QUALITY_CHECK
+  READY_FOR_PRODUCTION
+  PRODUCED
+  PRE_FABRICATED
+  READY_FOR_TRUCK_LOAD
   SHIPPED
-  ON_SITE
-  INSTALLED
-  COMPLETED
-  ON_HOLD
-  REJECTED
+  EDIT
 }
 
 enum NotificationType {

@@ -89,7 +89,7 @@ router.get('/:projectId/filters', async (req, res) => {
 router.get('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
-    const { status, groupId, search, page = '1', limit = '50' } = req.query;
+    const { status, groupId, customStatusId, search, page = '1', limit = '50' } = req.query;
 
     const pageNum = parseInt(page as string);
     const limitNum = Math.min(parseInt(limit as string), 100); // Max 100 per page
@@ -105,6 +105,15 @@ router.get('/:projectId', async (req, res) => {
 
     if (groupId) {
       where.groupId = groupId as string;
+    }
+
+    // Filter by custom status ID (many-to-many relationship)
+    if (customStatusId) {
+      where.customStatuses = {
+        some: {
+          customStatusId: customStatusId as string
+        }
+      };
     }
 
     if (search) {
@@ -160,6 +169,18 @@ router.get('/:projectId', async (req, res) => {
             globalId: true,
           },
         },
+        customStatuses: {
+          include: {
+            customStatus: {
+              select: {
+                id: true,
+                name: true,
+                color: true,
+                icon: true,
+              },
+            },
+          },
+        },
         statusHistory: {
           orderBy: { createdAt: 'desc' },
           take: 5,
@@ -191,6 +212,55 @@ router.get('/:projectId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching panels:', error);
     res.status(500).json({ error: 'Failed to fetch panels' });
+  }
+});
+
+// GET /api/panels/:projectId/statistics - Get panel statistics for a project
+// IMPORTANT: This must come BEFORE /:projectId/:panelId to avoid route conflicts
+router.get('/:projectId/statistics', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    const [totalPanels, statusCounts, groupCounts] = await Promise.all([
+      // Total panels count
+      prisma.panel.count({
+        where: { projectId: parseInt(projectId) },
+      }),
+
+      // Count by status
+      prisma.panel.groupBy({
+        by: ['status'],
+        where: { projectId: parseInt(projectId) },
+        _count: { status: true },
+      }),
+
+      // Count by group
+      prisma.panel.groupBy({
+        by: ['groupId'],
+        where: { 
+          projectId: parseInt(projectId),
+          groupId: { not: null },
+        },
+        _count: { groupId: true },
+      }),
+    ]);
+
+    const statistics = {
+      totalPanels,
+      statusDistribution: statusCounts.reduce((acc, item) => {
+        acc[item.status] = item._count.status;
+        return acc;
+      }, {} as Record<string, number>),
+      groupDistribution: groupCounts.map(item => ({
+        groupId: item.groupId,
+        count: item._count.groupId,
+      })),
+    };
+
+    res.json(statistics);
+  } catch (error) {
+    console.error('Error fetching panel statistics:', error);
+    res.status(500).json({ error: 'Failed to fetch panel statistics' });
   }
 });
 
@@ -417,61 +487,6 @@ router.delete('/:projectId/:panelId', async (req, res) => {
   } catch (error) {
     console.error('Error deleting panel:', error);
     res.status(500).json({ error: 'Failed to delete panel' });
-  }
-});
-
-// GET /api/panels/:projectId/statistics - Get panel statistics for a project
-router.get('/:projectId/statistics', async (req, res) => {
-  try {
-    const { projectId } = req.params;
-
-    const [totalPanels, statusCounts, groupCounts] = await Promise.all([
-      // Total panels count
-      prisma.panel.count({
-        where: { projectId: parseInt(projectId) },
-      }),
-
-      // Count by status
-      prisma.panel.groupBy({
-        by: ['status'],
-        where: { projectId: parseInt(projectId) },
-        _count: { status: true },
-      }),
-
-      // Count by group
-      prisma.panel.groupBy({
-        by: ['groupId'],
-        where: { 
-          projectId: parseInt(projectId),
-          groupId: { not: null },
-        },
-        _count: { groupId: true },
-        include: {
-          group: {
-            select: {
-              name: true,
-            },
-          },
-        },
-      }),
-    ]);
-
-    const statistics = {
-      totalPanels,
-      statusDistribution: statusCounts.reduce((acc, item) => {
-        acc[item.status] = item._count.status;
-        return acc;
-      }, {} as Record<string, number>),
-      groupDistribution: groupCounts.map(item => ({
-        groupId: item.groupId,
-        count: item._count.groupId,
-      })),
-    };
-
-    res.json(statistics);
-  } catch (error) {
-    console.error('Error fetching panel statistics:', error);
-    res.status(500).json({ error: 'Failed to fetch panel statistics' });
   }
 });
 

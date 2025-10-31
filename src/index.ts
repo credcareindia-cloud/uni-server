@@ -15,6 +15,8 @@ import { uploadRoutes } from './routes/uploads.js';
 import { modelFirstProjectRouter } from './routes/model-first-project.js';
 import panelRoutes from './routes/panels.js';
 import groupRoutes from './routes/groups.js';
+import statusManagementRoutes from './routes/status-management.js';
+import groupManagementRoutes from './routes/group-management.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 
@@ -83,6 +85,8 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/panels', panelRoutes);
 app.use('/api/groups', groupRoutes);
+app.use('/api/status-management', statusManagementRoutes);
+app.use('/api/group-management', groupManagementRoutes);
 app.use('/api', modelFirstProjectRouter);
 
 // 404 handler

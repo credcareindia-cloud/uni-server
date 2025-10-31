@@ -1274,17 +1274,9 @@ export class FragProcessor {
   /**
    * Map panel status from FRAG processor to database enum
    */
-  private mapPanelStatusToDb(status: PanelData['status']): 'PLANNING' | 'DESIGNED' | 'APPROVED' | 'IN_PRODUCTION' | 'MANUFACTURED' | 'QUALITY_CHECK' | 'SHIPPED' | 'ON_SITE' | 'INSTALLED' | 'COMPLETED' | 'ON_HOLD' | 'REJECTED' {
-    const statusMap: Record<PanelData['status'], 'PLANNING' | 'DESIGNED' | 'APPROVED' | 'IN_PRODUCTION' | 'MANUFACTURED' | 'QUALITY_CHECK' | 'SHIPPED' | 'ON_SITE' | 'INSTALLED' | 'COMPLETED' | 'ON_HOLD' | 'REJECTED'> = {
-      'READY_FOR_PRODUCTION': 'APPROVED', // Ready for production -> Approved
-      'PRODUCED': 'MANUFACTURED', // Produced -> Manufactured
-      'PRE_FABRICATED': 'MANUFACTURED',
-      'READY_FOR_TRUCK_LOAD': 'QUALITY_CHECK',
-      'SHIPPED': 'SHIPPED',
-      'EDIT': 'DESIGNED' // Edit status -> Designed (needs review)
-    };
-    
-    return statusMap[status] || 'PLANNING';
+  private mapPanelStatusToDb(status: PanelData['status']): 'READY_FOR_PRODUCTION' | 'PRODUCED' | 'PRE_FABRICATED' | 'READY_FOR_TRUCK_LOAD' | 'SHIPPED' | 'EDIT' {
+    // No mapping needed anymore - return status as-is since we updated the enum
+    return status;
   }
 
   /**
