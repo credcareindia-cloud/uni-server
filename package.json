@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc --noEmit false --skipLibCheck --noUnusedLocals false --noUnusedParameters false",
+    "build:check": "eslint src --ext .ts && tsc --project tsconfig.strict.json",
+    "build:prod": "prisma generate && tsc --noEmit false --skipLibCheck --noUnusedLocals false --noUnusedParameters false",
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
