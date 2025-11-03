@@ -131,6 +131,35 @@ export class StorageService {
   }
 
   /**
+   * Download a file and return its buffer
+   */
+  async downloadFile(key: string): Promise<Buffer> {
+    try {
+      const command = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      });
+
+      const response = await this.s3Client.send(command);
+      
+      // Convert the stream to a buffer
+      const chunks: Uint8Array[] = [];
+      const stream = response.Body as any;
+      
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      
+      const buffer = Buffer.concat(chunks);
+      logger.info(`✅ File downloaded successfully: ${key} (${buffer.length} bytes)`);
+      return buffer;
+    } catch (error) {
+      logger.error('Error downloading file:', error);
+      throw new Error('Failed to download file');
+    }
+  }
+
+  /**
    * Delete a file
    */
   async deleteFile(key: string): Promise<void> {

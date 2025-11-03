@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import { PrismaClient, GroupStatus } from '@prisma/client';
 import { z } from 'zod';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
 const prisma = new PrismaClient();
+
+// Apply authentication middleware to all routes
+router.use(authenticateToken);
 
 // Validation schemas
 const createGroupSchema = z.object({
@@ -51,18 +55,21 @@ router.get('/:projectId', async (req, res) => {
     const groups = await prisma.group.findMany({
       where,
       include: {
-        panels: {
-          select: {
-            id: true,
-            name: true,
-            tag: true,
-            status: true,
-            objectType: true,
+        panelGroups: {
+          include: {
+            panel: {
+              select: {
+                id: true,
+                name: true,
+                tag: true,
+                objectType: true,
+              },
+            },
           },
         },
         _count: {
           select: {
-            panels: true,
+            panelGroups: true,
           },
         },
       },
@@ -134,6 +141,113 @@ router.get('/:projectId/:groupId', async (req, res) => {
   }
 });
 
+// GET /api/groups/:projectId/:groupId/panels - Get panels in a group with pagination
+router.get('/:projectId/:groupId/panels', async (req, res) => {
+  try {
+    const { projectId, groupId } = req.params;
+    const { page = '1', limit = '10' } = req.query;
+
+    const pageNum = parseInt(page as string);
+    const limitNum = Math.min(parseInt(limit as string), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Get total count of panels in this group
+    const totalCount = await prisma.panelGroup.count({
+      where: {
+        groupId: groupId,
+        group: {
+          projectId: parseInt(projectId),
+        },
+      },
+    });
+
+    // Get panels with full details including statuses and other groups
+    const panelGroups = await prisma.panelGroup.findMany({
+      where: {
+        groupId: groupId,
+        group: {
+          projectId: parseInt(projectId),
+        },
+      },
+      include: {
+        panel: {
+          include: {
+            statuses: {
+              include: {
+                status: {
+                  select: {
+                    id: true,
+                    name: true,
+                    icon: true,
+                    color: true,
+                  },
+                },
+              },
+            },
+            groups: {
+              include: {
+                group: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        panel: {
+          name: 'asc',
+        },
+      },
+      skip,
+      take: limitNum,
+    });
+
+    // Transform the data to match frontend expectations with all panel fields
+    const panels = panelGroups.map(pg => ({
+      id: pg.panel.id,
+      projectId: pg.panel.projectId,
+      modelId: pg.panel.modelId,
+      elementId: pg.panel.elementId,
+      name: pg.panel.name,
+      tag: pg.panel.tag,
+      objectType: pg.panel.objectType,
+      dimensions: pg.panel.dimensions,
+      location: pg.panel.location,
+      material: pg.panel.material,
+      weight: pg.panel.weight,
+      area: pg.panel.area,
+      status: pg.panel.status,
+      groupId: pg.panel.groupId,
+      productionDate: pg.panel.productionDate,
+      shippingDate: pg.panel.shippingDate,
+      installationDate: pg.panel.installationDate,
+      notes: pg.panel.notes,
+      metadata: pg.panel.metadata,
+      createdAt: pg.panel.createdAt,
+      updatedAt: pg.panel.updatedAt,
+      statuses: pg.panel.statuses,
+      groups: pg.panel.groups,
+    }));
+
+    res.json({
+      panels,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching group panels:', error);
+    res.status(500).json({ error: 'Failed to fetch group panels' });
+  }
+});
+
 // POST /api/groups/:projectId - Create a new group
 router.post('/:projectId', async (req, res) => {
   try {
@@ -182,22 +296,12 @@ router.put('/:projectId/:groupId', async (req, res) => {
     const group = await prisma.group.update({
       where: {
         id: groupId,
-        projectId: parseInt(projectId),
       },
       data: validatedData,
       include: {
-        panels: {
-          select: {
-            id: true,
-            name: true,
-            tag: true,
-            status: true,
-            objectType: true,
-          },
-        },
         _count: {
           select: {
-            panels: true,
+            panelGroups: true,
           },
         },
       },
@@ -231,33 +335,56 @@ router.post('/:projectId/:groupId/panels', async (req, res) => {
       return res.status(400).json({ error: 'Some panels do not belong to this project' });
     }
 
-    // Update panels to assign them to the group
-    await prisma.panel.updateMany({
-      where: {
-        id: { in: panelIds },
-        projectId: parseInt(projectId),
-      },
-      data: {
-        groupId: groupId,
-      },
-    });
+    // Create panel-group assignments (many-to-many)
+    const assignmentsToCreate = [];
+    
+    for (const panelId of panelIds) {
+      // Check if this panel is already in this group
+      const existing = await prisma.panelGroup.findUnique({
+        where: {
+          panelId_groupId: {
+            panelId: panelId,
+            groupId: groupId
+          }
+        }
+      });
+      
+      // Only create if it doesn't exist
+      if (!existing) {
+        assignmentsToCreate.push({
+          panelId: panelId,
+          groupId: groupId
+        });
+      }
+    }
+    
+    // Bulk create assignments
+    if (assignmentsToCreate.length > 0) {
+      await prisma.panelGroup.createMany({
+        data: assignmentsToCreate,
+        skipDuplicates: true
+      });
+    }
 
     // Return updated group with panels
     const group = await prisma.group.findUnique({
       where: { id: groupId },
       include: {
-        panels: {
-          select: {
-            id: true,
-            name: true,
-            tag: true,
-            status: true,
-            objectType: true,
+        panelGroups: {
+          include: {
+            panel: {
+              select: {
+                id: true,
+                name: true,
+                tag: true,
+                objectType: true,
+              },
+            },
           },
         },
         _count: {
           select: {
-            panels: true,
+            panelGroups: true,
           },
         },
       },
@@ -279,15 +406,11 @@ router.delete('/:projectId/:groupId/panels', async (req, res) => {
     const { projectId, groupId } = req.params;
     const { panelIds } = assignPanelsSchema.parse(req.body);
 
-    // Update panels to remove them from the group
-    await prisma.panel.updateMany({
+    // Remove panel-group assignments (many-to-many)
+    await prisma.panelGroup.deleteMany({
       where: {
-        id: { in: panelIds },
-        projectId: parseInt(projectId),
+        panelId: { in: panelIds },
         groupId: groupId,
-      },
-      data: {
-        groupId: null,
       },
     });
 
@@ -295,18 +418,21 @@ router.delete('/:projectId/:groupId/panels', async (req, res) => {
     const group = await prisma.group.findUnique({
       where: { id: groupId },
       include: {
-        panels: {
-          select: {
-            id: true,
-            name: true,
-            tag: true,
-            status: true,
-            objectType: true,
+        panelGroups: {
+          include: {
+            panel: {
+              select: {
+                id: true,
+                name: true,
+                tag: true,
+                objectType: true,
+              },
+            },
           },
         },
         _count: {
           select: {
-            panels: true,
+            panelGroups: true,
           },
         },
       },
@@ -327,14 +453,13 @@ router.delete('/:projectId/:groupId', async (req, res) => {
   try {
     const { projectId, groupId } = req.params;
 
-    // First, remove group assignment from all panels
-    await prisma.panel.updateMany({
+    // First, delete all panel-group associations
+    await prisma.panelGroup.deleteMany({
       where: {
         groupId: groupId,
-        projectId: parseInt(projectId),
-      },
-      data: {
-        groupId: null,
+        group: {
+          projectId: parseInt(projectId),
+        },
       },
     });
 
@@ -342,7 +467,6 @@ router.delete('/:projectId/:groupId', async (req, res) => {
     await prisma.group.delete({
       where: {
         id: groupId,
-        projectId: parseInt(projectId),
       },
     });
 

@@ -77,3 +77,8 @@ minio_data/
 # Temporary files
 tmp/
 temp/
+
+#commented
+src/routes/model-first-upload-backup
+src/routes/projects.ts
+src/routes/uploads.ts

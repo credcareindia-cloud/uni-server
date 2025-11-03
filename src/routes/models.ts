@@ -25,17 +25,55 @@ const elementQuerySchema = z.object({
 });
 
 /**
+ * GET /api/models/:id/metadata
+ * Get model metadata with storeys and panels
+ */
+router.get('/:id/metadata', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+
+  const model = await prisma.model.findFirst({
+    where: {
+      id,
+      project: {
+        createdBy: req.user.id
+      }
+    },
+    select: {
+      id: true,
+      elementCount: true,
+      spatialStructure: true,
+      originalFilename: true,
+      type: true,
+      status: true
+    }
+  });
+
+  if (!model) {
+    throw createApiError('Model not found', 404);
+  }
+
+  res.json({
+    success: true,
+    model: {
+      id: model.id,
+      filename: model.originalFilename,
+      type: model.type,
+      status: model.status,
+      totalElements: model.elementCount || 0,
+      spatialStructure: model.spatialStructure || []
+    }
+  });
+}));
+
+/**
  * GET /api/models/:id
  * Get model details and metadata
- * TODO: Re-enable authentication after testing
  */
-router.get('/:id', asyncHandler(async (req: any, res: Response) => {
-  // Temporary: Use demo user for testing without auth
-  const demoUser = await prisma.user.findUnique({
-    where: { email: 'demo@uniqube.com' }
-  });
-  req.user = demoUser || { id: 'demo-user-id', email: 'demo@uniqube.com' };
-  
+router.get('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }

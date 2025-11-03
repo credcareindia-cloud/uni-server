@@ -21,11 +21,12 @@ model User {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   // Relations
-  projects           Project[]
-  notifications      Notification[]
-  sessions           Session[]
-  panelStatusChanges PanelStatusHistory[]
-  panelCustomStatusAssignments PanelCustomStatus[]
+  projects              Project[]
+  notifications         Notification[]
+  sessions              Session[]
+  statusHistory         StatusHistory[]
+  panelStatusAssignments PanelStatus[]
+  panelGroupAssignments  PanelGroup[]
 
   @@map("users")
 }
@@ -64,7 +65,7 @@ model Project {
   modelHistory  Model[]        @relation("ProjectModelHistory")
   groups        Group[]
   panels        Panel[]        // Panels in this project
-  customStatuses CustomStatus[] // Custom statuses for this project
+  statuses      Status[]       // Custom statuses for this project
 
   @@map("projects")
 }
@@ -149,9 +150,10 @@ model Group {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  panels  Panel[] // Panels in this group
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  panelGroups PanelGroup[] // Many-to-many relation
 
+  @@index([projectId])
   @@map("groups")
 }
 
@@ -174,10 +176,8 @@ model Panel {
   weight      Float?      // Panel weight
   area        Float?      // Panel area
   
-  // Status and group assignment
-  status          PanelStatus   @default(READY_FOR_PRODUCTION)
-  customStatusId  String?       @map("custom_status_id") // Deprecated: kept for backward compatibility
-  groupId         String?       @map("group_id")
+  // Multi-status and multi-group assignment (no single status/group anymore)
+  // Legacy fields removed - all panels use many-to-many relations
   
   // Manufacturing and logistics
   productionDate    DateTime? @map("production_date")
@@ -195,19 +195,16 @@ model Panel {
   project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   model         Model?        @relation(fields: [modelId], references: [id])
   element       ModelElement? @relation(fields: [elementId], references: [id])
-  group         Group?        @relation(fields: [groupId], references: [id])
-  customStatus  CustomStatus? @relation("PanelSingleStatus", fields: [customStatusId], references: [id])
-  customStatuses PanelCustomStatus[] // Many-to-many relation for multiple custom statuses
-  statusHistory PanelStatusHistory[]
+  statuses      PanelStatus[] // Many-to-many: Multiple statuses per panel
+  groups        PanelGroup[]  // Many-to-many: Multiple groups per panel
+  statusHistory StatusHistory[]
 
-  @@index([projectId, status])
-  @@index([projectId, groupId])
-  @@index([projectId, customStatusId])
+  @@index([projectId])
   @@index([modelId])
   @@map("panels")
 }
 
-model CustomStatus {
+model Status {
   id          String   @id @default(cuid())
   projectId   Int      @map("project_id")
   name        String
@@ -215,43 +212,64 @@ model CustomStatus {
   color       String   @default("#3B82F6")
   description String?
   order       Int      @default(0)
+  isDefault   Boolean  @default(false) @map("is_default") // Mark prebuilt statuses
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  panels  Panel[] @relation("PanelSingleStatus") // Deprecated single status relation
-  panelStatuses PanelCustomStatus[] // Many-to-many relation
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  panelStatuses PanelStatus[] // Many-to-many relation
 
   @@index([projectId])
-  @@map("custom_statuses")
+  @@index([projectId, order])
+  @@map("statuses")
 }
 
-// Junction table for many-to-many relationship between Panels and CustomStatuses
-model PanelCustomStatus {
-  id             String       @id @default(cuid())
-  panelId        String       @map("panel_id")
-  customStatusId String       @map("custom_status_id")
-  assignedAt     DateTime     @default(now()) @map("assigned_at")
-  assignedBy     String?      @map("assigned_by") // User who assigned the status
+// Junction table for many-to-many relationship between Panels and Statuses
+model PanelStatus {
+  id         String   @id @default(cuid())
+  panelId    String   @map("panel_id")
+  statusId   String   @map("status_id")
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  assignedBy String?  @map("assigned_by") // User who assigned the status
 
   // Relations
-  panel        Panel        @relation(fields: [panelId], references: [id], onDelete: Cascade)
-  customStatus CustomStatus @relation(fields: [customStatusId], references: [id], onDelete: Cascade)
-  user         User?        @relation(fields: [assignedBy], references: [id])
+  panel  Panel  @relation(fields: [panelId], references: [id], onDelete: Cascade)
+  status Status @relation(fields: [statusId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [assignedBy], references: [id])
 
-  @@unique([panelId, customStatusId]) // Prevent duplicate assignments
+  @@unique([panelId, statusId]) // Prevent duplicate assignments
   @@index([panelId])
-  @@index([customStatusId])
-  @@map("panel_custom_statuses")
+  @@index([statusId])
+  @@map("panel_statuses")
 }
 
-model PanelStatusHistory {
-  id        String      @id @default(cuid())
-  panelId   String      @map("panel_id")
-  status    PanelStatus
-  notes     String?     // Notes about status change
-  changedBy String?     @map("changed_by") // User who changed the status
+// Junction table for many-to-many relationship between Panels and Groups
+model PanelGroup {
+  id         String   @id @default(cuid())
+  panelId    String   @map("panel_id")
+  groupId    String   @map("group_id")
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  assignedBy String?  @map("assigned_by") // User who assigned the group
+
+  // Relations
+  panel Panel @relation(fields: [panelId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [assignedBy], references: [id])
+
+  @@unique([panelId, groupId]) // Prevent duplicate assignments
+  @@index([panelId])
+  @@index([groupId])
+  @@map("panel_groups")
+}
+
+model StatusHistory {
+  id        String   @id @default(cuid())
+  panelId   String   @map("panel_id")
+  statusId  String   @map("status_id")
+  action    String   // "ASSIGNED" or "REMOVED"
+  notes     String?  // Notes about status change
+  changedBy String?  @map("changed_by") // User who changed the status
   
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -259,7 +277,9 @@ model PanelStatusHistory {
   panel Panel @relation(fields: [panelId], references: [id], onDelete: Cascade)
   user  User? @relation(fields: [changedBy], references: [id])
 
-  @@map("panel_status_history")
+  @@index([panelId])
+  @@index([statusId])
+  @@map("status_history")
 }
 
 model Notification {
@@ -302,7 +322,6 @@ enum ModelType {
 }
 
 enum ModelStatus {
-  UPLOADED
   PROCESSING
   READY
   FAILED
@@ -313,15 +332,6 @@ enum GroupStatus {
   IN_PROGRESS
   COMPLETED
   ON_HOLD
-}
-
-enum PanelStatus {
-  READY_FOR_PRODUCTION
-  PRODUCED
-  PRE_FABRICATED
-  READY_FOR_TRUCK_LOAD
-  SHIPPED
-  EDIT
 }
 
 enum NotificationType {

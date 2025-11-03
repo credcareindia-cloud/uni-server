@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: uniqube-postgres
+    environment:
+      POSTGRES_DB: uniqube3d
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5433:5432"  # Use 5433 on Windows to avoid port conflicts
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: uniqube-minio
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "127.0.0.1:9000:9000"  # Explicitly bind to 127.0.0.1 for Windows
+      - "127.0.0.1:9001:9001"  # Explicitly bind to 127.0.0.1 for Windows
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    networks:
+      - uniqube-network
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: uniqube-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@uniqube.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "127.0.0.1:5050:80" 
+    depends_on:
+      - postgres
+    profiles:
+      - tools
+    networks:
+      - uniqube-network
+
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  uniqube-network:
+    driver: bridge

@@ -1,8 +1,12 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 const prisma = new PrismaClient();
+
+// Apply authentication middleware to all routes
+router.use(authenticateToken);
 
 /**
  * Group Management Routes

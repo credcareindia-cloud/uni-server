@@ -1,74 +1,59 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 const prisma = new PrismaClient();
+
+// Apply authentication middleware to all routes
+router.use(authenticateToken);
 
 /**
  * Custom Status Management Routes
  * These allow creating custom statuses beyond the default enum values
  */
 
-// Assign custom status to panels (bulk operation) - MUST BE BEFORE /:projectId routes
+// Assign status to panels 
 router.post('/assign-to-panels', async (req, res) => {
   try {
     const { panelIds, statusId, projectId } = req.body;
     
-    // Check if it's a default status or custom status
-    const validPanelStatuses = ['READY_FOR_PRODUCTION', 'PRODUCED', 'PRE_FABRICATED', 'READY_FOR_TRUCK_LOAD', 'SHIPPED', 'EDIT'];
-    const isCustomStatus = !validPanelStatuses.includes(statusId);
+    // Add status to panels (many-to-many, don't overwrite existing)
+    const assignmentsToCreate = [];
     
-    if (isCustomStatus) {
-      // Add custom status to panels (many-to-many, don't overwrite existing)
-      const assignmentsToCreate = [];
-      
-      for (const panelId of panelIds) {
-        // Check if this panel already has this status
-        const existing = await prisma.panelCustomStatus.findUnique({
-          where: {
-            panelId_customStatusId: {
-              panelId: panelId,
-              customStatusId: statusId
-            }
-          }
-        });
-        
-        // Only create if it doesn't exist
-        if (!existing) {
-          assignmentsToCreate.push({
+    for (const panelId of panelIds) {
+      // Check if this panel already has this status
+      const existing = await prisma.panelStatus.findUnique({
+        where: {
+          panelId_statusId: {
             panelId: panelId,
-            customStatusId: statusId
-          });
+            statusId: statusId
+          }
         }
-      }
+      });
       
-      // Bulk create assignments
-      if (assignmentsToCreate.length > 0) {
-        await prisma.panelCustomStatus.createMany({
-          data: assignmentsToCreate,
-          skipDuplicates: true
+      // Only create if it doesn't exist
+      if (!existing) {
+        assignmentsToCreate.push({
+          panelId: panelId,
+          statusId: statusId
         });
       }
-      
-      res.json({ 
-        success: true, 
-        updatedCount: assignmentsToCreate.length,
-        skipped: panelIds.length - assignmentsToCreate.length 
-      });
-    } else {
-      // Assign default status (replaces existing default status)
-      await prisma.panel.updateMany({
-        where: { 
-          id: { in: panelIds },
-          projectId: parseInt(projectId)
-        },
-        data: { 
-          status: statusId as any
-        }
-      });
-      
-      res.json({ success: true, updatedCount: panelIds.length });
     }
+    
+    // Bulk create assignments
+    if (assignmentsToCreate.length > 0) {
+      await prisma.panelStatus.createMany({
+        data: assignmentsToCreate,
+        skipDuplicates: true
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      updatedCount: assignmentsToCreate.length,
+      skipped: panelIds.length - assignmentsToCreate.length 
+    });
   } catch (error) {
     console.error('Error assigning status to panels:', error);
     res.status(500).json({ error: 'Failed to assign status to panels' });
@@ -80,12 +65,14 @@ router.post('/remove-from-panels', async (req, res) => {
   try {
     const { panelIds, projectId } = req.body;
     
-    await prisma.panel.updateMany({
+    // Remove status assignments from PanelStatus junction table
+    await prisma.panelStatus.deleteMany({
       where: { 
-        id: { in: panelIds },
-        projectId: parseInt(projectId)
-      },
-      data: { customStatusId: null }
+        panelId: { in: panelIds },
+        panel: {
+          projectId: parseInt(projectId)
+        }
+      }
     });
     
     res.json({ success: true, updatedCount: panelIds.length });
@@ -100,7 +87,7 @@ router.get('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
     
-    const customStatuses = await prisma.customStatus.findMany({
+    const statuses = await prisma.status.findMany({
       where: { projectId: parseInt(projectId) },
       orderBy: { order: 'asc' },
       include: {
@@ -111,7 +98,7 @@ router.get('/:projectId', async (req, res) => {
     });
     
     // Format response to include panel count
-    const statusesWithCount = customStatuses.map(status => ({
+    const statusesWithCount = statuses.map(status => ({
       ...status,
       panelCount: status._count.panelStatuses
     }));
@@ -127,16 +114,22 @@ router.get('/:projectId', async (req, res) => {
 router.post('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
+    console.log('📥 Received request body:', req.body);
     const { name, icon, color, description } = req.body;
+    console.log('📝 Extracted name:', name, 'icon:', icon, 'color:', color);
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Status name is required' });
+    }
     
     // Get the highest order number
-    const maxOrder = await prisma.customStatus.findFirst({
+    const maxOrder = await prisma.status.findFirst({
       where: { projectId: parseInt(projectId) },
       orderBy: { order: 'desc' },
       select: { order: true }
     });
     
-    const newStatus = await prisma.customStatus.create({
+    const newStatus = await prisma.status.create({
       data: {
         projectId: parseInt(projectId),
         name,
@@ -160,7 +153,7 @@ router.put('/:statusId', async (req, res) => {
     const { statusId } = req.params;
     const { name, icon, color, description, order } = req.body;
     
-    const updatedStatus = await prisma.customStatus.update({
+    const updatedStatus = await prisma.status.update({
       where: { id: statusId },
       data: {
         ...(name && { name }),
@@ -183,14 +176,13 @@ router.delete('/:statusId', async (req, res) => {
   try {
     const { statusId } = req.params;
     
-    // First, remove this status from all panels
-    await prisma.panel.updateMany({
-      where: { customStatusId: statusId },
-      data: { customStatusId: null }
+    // First, remove this status from all panel assignments
+    await prisma.panelStatus.deleteMany({
+      where: { statusId: statusId }
     });
     
     // Then delete the status
-    await prisma.customStatus.delete({
+    await prisma.status.delete({
       where: { id: statusId }
     });
     

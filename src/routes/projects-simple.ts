@@ -2,9 +2,13 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../config/database.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
+import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = Router();
+
+// Apply authentication middleware to all routes
+router.use(authenticateToken);
 
 // Validation schemas
 const createProjectSchema = z.object({
@@ -30,25 +34,10 @@ const querySchema = z.object({
  * GET /api/projects
  * Get all projects for the authenticated user
  */
-router.get('/', asyncHandler(async (req: any, res: Response) => {
-  // Temporary: Use demo user for testing without auth
-  let demoUser = await prisma.user.findUnique({
-    where: { email: 'demo@uniqube.com' }
-  });
-  
-  // Create demo user if it doesn't exist
-  if (!demoUser) {
-    demoUser = await prisma.user.create({
-      data: {
-        email: 'demo@uniqube.com',
-        name: 'Demo User',
-        passwordHash: 'demo-hash',
-        role: 'USER'
-      }
-    });
+router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
   }
-  
-  req.user = demoUser;
 
   const { page = 1, limit = 10, status, search } = querySchema.parse(req.query);
   const skip = (page - 1) * limit;
@@ -148,24 +137,10 @@ router.get('/', asyncHandler(async (req: any, res: Response) => {
  * GET /api/projects/:id
  * Get a specific project by ID
  */
-router.get('/:id', asyncHandler(async (req: any, res: Response) => {
-  // Temporary: Use demo user for testing without auth
-  let demoUser = await prisma.user.findUnique({
-    where: { email: 'demo@uniqube.com' }
-  });
-  
-  if (!demoUser) {
-    demoUser = await prisma.user.create({
-      data: {
-        email: 'demo@uniqube.com',
-        name: 'Demo User',
-        passwordHash: 'demo-hash',
-        role: 'USER'
-      }
-    });
+router.get('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
   }
-  
-  req.user = demoUser;
 
   const { id } = req.params;
   const projectId = parseInt(id);
@@ -274,24 +249,10 @@ router.post('/', asyncHandler(async (req: any, res: Response) => {
  * PUT /api/projects/:id
  * Update a project
  */
-router.put('/:id', asyncHandler(async (req: any, res: Response) => {
-  // Temporary: Use demo user for testing without auth
-  let demoUser = await prisma.user.findUnique({
-    where: { email: 'demo@uniqube.com' }
-  });
-  
-  if (!demoUser) {
-    demoUser = await prisma.user.create({
-      data: {
-        email: 'demo@uniqube.com',
-        name: 'Demo User',
-        passwordHash: 'demo-hash',
-        role: 'USER'
-      }
-    });
+router.put('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
   }
-  
-  req.user = demoUser;
 
   const { id } = req.params;
   const projectId = parseInt(id);
@@ -352,6 +313,39 @@ router.put('/:id', asyncHandler(async (req: any, res: Response) => {
     message: 'Project updated successfully',
     project: transformedProject
   });
+}));
+
+/**
+ * GET /api/projects/:id/activities
+ * Get recent activities for a project
+ */
+router.get('/:id/activities', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const projectId = parseInt(id);
+
+  if (isNaN(projectId)) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  // Check if project exists and user owns it
+  const project = await prisma.project.findFirst({
+    where: {
+      id: projectId,
+      createdBy: req.user.id
+    }
+  });
+
+  if (!project) {
+    throw createApiError('Project not found', 404);
+  }
+
+  // For now, return an empty array
+  // TODO: Implement activity tracking in the future
+  res.json([]);
 }));
 
 export default router;

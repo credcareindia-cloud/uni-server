@@ -11,12 +11,14 @@ import { authRoutes } from './routes/auth.js';
 import projectRoutes from './routes/projects-simple.js';
 import { modelRoutes } from './routes/models.js';
 import { notificationRoutes } from './routes/notifications.js';
-import { uploadRoutes } from './routes/uploads.js';
+// import { uploadRoutes } from './routes/uploads.js';
 import { modelFirstProjectRouter } from './routes/model-first-project.js';
+import { modelDownloadRouter } from './routes/model-download.js';
 import panelRoutes from './routes/panels.js';
 import groupRoutes from './routes/groups.js';
 import statusManagementRoutes from './routes/status-management.js';
 import groupManagementRoutes from './routes/group-management.js';
+import adminRoutes from './routes/admin.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 
@@ -51,16 +53,18 @@ app.use(cors({
 
 // Body parsing middleware
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// File upload middleware
+// File upload middleware - Use temp files for large IFC files (900MB+)
 app.use(fileUpload({
   limits: { fileSize: 5 * 1024 * 1024 * 1024 }, // 5GB max file size
-  useTempFiles: false, // Keep files in memory for processing
+  useTempFiles: true, // Use temp files instead of memory for large files
+  tempFileDir: '/tmp/', // Temporary directory for uploads
   createParentPath: true,
   abortOnLimit: true,
-  responseOnLimit: 'File size limit exceeded'
+  responseOnLimit: 'File size limit exceeded',
+  debug: false
 }));
 
 // Logging
@@ -82,12 +86,15 @@ app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/models', modelRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/uploads', uploadRoutes);
+// app.use('/api/uploads', uploadRoutes);
 app.use('/api/panels', panelRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/status-management', statusManagementRoutes);
 app.use('/api/group-management', groupManagementRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api', modelFirstProjectRouter);
+// app.use('/api', metadataUpdateRouter);
+app.use('/api', modelDownloadRouter);
 
 // 404 handler
 app.use('*', (req, res) => {
