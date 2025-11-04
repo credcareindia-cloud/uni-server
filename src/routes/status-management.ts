@@ -93,7 +93,28 @@ router.get('/:projectId', async (req, res) => {
       include: {
         _count: {
           select: { panelStatuses: true }
-        }
+        },
+        panelStatuses: {
+          include: {
+            panel: {
+              select: {
+                id: true,
+                name: true,
+                tag: true,
+                objectType: true,
+                elementId: true,
+                metadata: true,
+                element: {
+                  select: {
+                    id: true,
+                    globalId: true,
+                    ifcType: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       }
     });
     

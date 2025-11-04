@@ -19,6 +19,7 @@ import groupRoutes from './routes/groups.js';
 import statusManagementRoutes from './routes/status-management.js';
 import groupManagementRoutes from './routes/group-management.js';
 import adminRoutes from './routes/admin.js';
+import userRoutes from './routes/user.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 
@@ -92,6 +93,7 @@ app.use('/api/groups', groupRoutes);
 app.use('/api/status-management', statusManagementRoutes);
 app.use('/api/group-management', groupManagementRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/user', userRoutes);
 app.use('/api', modelFirstProjectRouter);
 // app.use('/api', metadataUpdateRouter);
 app.use('/api', modelDownloadRouter);

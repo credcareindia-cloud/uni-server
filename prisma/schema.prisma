@@ -17,6 +17,10 @@ model User {
   name         String
   role         UserRole @default(USER)
   avatar       String?
+  phone        String?
+  location     String?
+  company      String?
+  userRole     String?  @map("user_role")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 

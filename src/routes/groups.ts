@@ -63,6 +63,15 @@ router.get('/:projectId', async (req, res) => {
                 name: true,
                 tag: true,
                 objectType: true,
+                elementId: true,
+                metadata: true, // Contains ifcElementId from IFC model
+                element: {
+                  select: {
+                    id: true,
+                    globalId: true,
+                    ifcType: true,
+                  },
+                },
               },
             },
           },

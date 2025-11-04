@@ -77,6 +77,89 @@ router.get('/:projectId/filters', async (req, res) => {
   }
 });
 
+// GET /api/panels/:projectId/all - Get ALL panels for a project (no pagination)
+router.get('/:projectId/all', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    const panels = await prisma.panel.findMany({
+      where: { projectId: parseInt(projectId) },
+      select: {
+        id: true,
+        projectId: true,
+        modelId: true,
+        elementId: true,
+        name: true,
+        tag: true,
+        objectType: true,
+        dimensions: true,
+        location: true,
+        material: true,
+        weight: true,
+        area: true,
+        productionDate: true,
+        shippingDate: true,
+        installationDate: true,
+        notes: true,
+        metadata: true,
+        createdAt: true,
+        updatedAt: true,
+        groups: {
+          include: {
+            group: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+        statuses: {
+          include: {
+            status: {
+              select: {
+                id: true,
+                name: true,
+                color: true,
+                icon: true,
+                description: true,
+                order: true,
+              },
+            },
+          },
+        },
+        model: {
+          select: {
+            id: true,
+            originalFilename: true,
+          },
+        },
+        element: {
+          select: {
+            id: true,
+            ifcType: true,
+            globalId: true,
+          },
+        },
+      },
+      orderBy: [
+        { location: 'asc' },
+        { name: 'asc' },
+      ],
+    });
+
+    console.log(`✅ Fetched ${panels.length} panels for project ${projectId} (no pagination)`);
+
+    res.json({
+      panels,
+      total: panels.length,
+    });
+  } catch (error) {
+    console.error('Error fetching all panels:', error);
+    res.status(500).json({ error: 'Failed to fetch panels' });
+  }
+});
+
 // GET /api/panels/:projectId - Get all panels for a project with pagination
 router.get('/:projectId', async (req, res) => {
   try {
@@ -152,7 +235,26 @@ router.get('/:projectId', async (req, res) => {
 
     const panels = await prisma.panel.findMany({
       where,
-      include: {
+      select: {
+        id: true,
+        projectId: true,
+        modelId: true,
+        elementId: true,
+        name: true,
+        tag: true,
+        objectType: true,
+        dimensions: true,
+        location: true,
+        material: true,
+        weight: true,
+        area: true,
+        productionDate: true,
+        shippingDate: true,
+        installationDate: true,
+        notes: true,
+        metadata: true, // ✅ Now explicitly returning metadata with ifcElementId
+        createdAt: true,
+        updatedAt: true,
         groups: {
           include: {
             group: {
