@@ -168,6 +168,56 @@ router.get('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedRequ
 }));
 
 /**
+ * GET /api/models/:id/download-url
+ * Return a pre-signed URL for direct download from S3/CloudFront
+ */
+router.get('/:id/download-url', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  // Optional expiry override, default 3600s, clamp between 60s and 86400s (24h)
+  const rawExpires = Number((req.query?.expires as string) || 3600);
+  const expiresIn = Math.min(Math.max(isNaN(rawExpires) ? 3600 : rawExpires, 60), 86400);
+
+  // Verify access and get storage key
+  const model = await prisma.model.findFirst({
+    where: {
+      id,
+      project: {
+        createdBy: req.user.id
+      }
+    },
+    select: {
+      status: true,
+      storageKey: true,
+      originalFilename: true
+    }
+  });
+
+  if (!model) {
+    throw createApiError('Model not found', 404);
+  }
+
+  if (model.status !== 'READY') {
+    throw createApiError('Model is not ready for download', 409);
+  }
+
+  try {
+    const url = await storageService.getDownloadUrl(model.storageKey, expiresIn);
+    return res.json({
+      url,
+      expiresIn,
+      filename: model.originalFilename
+    });
+  } catch (error) {
+    logger.error(`Failed to generate download URL for model ${id}:`, error);
+    throw createApiError('Failed to generate download URL', 500);
+  }
+}));
+
+/**
  * GET /api/models/:id/elements
  * Get model elements with filtering and pagination
  */
@@ -313,7 +363,6 @@ router.get('/:id/summary', authenticateToken, asyncHandler(async (req: Authentic
       status: true,
       processingProgress: true,
       elementCount: true,
-      ifcSchema: true,
       spatialStructure: true
     }
   });

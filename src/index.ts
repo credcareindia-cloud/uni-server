@@ -44,9 +44,34 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// CORS configuration
+// CORS configuration (supports exact origins and wildcard via regex)
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:3001')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const allowedOriginPatterns = (process.env.CORS_ORIGIN_REGEX || '')
+  .split(',')
+  .map((p) => p.trim())
+  .filter(Boolean)
+  .map((p) => {
+    try {
+      return new RegExp(p);
+    } catch {
+      logger.warn(`Invalid CORS origin regex skipped: ${p}`);
+      return null;
+    }
+  })
+  .filter((v): v is RegExp => v !== null);
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000', 'http://localhost:3001'],
+  origin: (origin, callback) => {
+    // Allow non-browser requests (curl, server-to-server)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (allowedOriginPatterns.some((re) => re.test(origin))) return callback(null, true);
+    return callback(new Error(`CORS blocked: ${origin}`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],

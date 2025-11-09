@@ -7,8 +7,12 @@
   "scripts": {
     "dev": "node --max-old-space-size=8192 --expose-gc --no-warnings ./node_modules/tsx/dist/cli.mjs watch src/index.ts",
     "build": "tsc --noEmit false --skipLibCheck --noUnusedLocals false --noUnusedParameters false",
-    "build:check": "eslint src --ext .ts && tsc --project tsconfig.strict.json",
+    "build:soft": "tsc --noEmit false || true",
+    "build:quiet": "tsc --noEmit false >/dev/null 2>&1 || true",
+    "build:check": "eslint \"src/**/*.{ts,tsx,js}\" && tsc --project tsconfig.strict.json",
     "build:prod": "prisma generate && tsc --noEmit false --skipLibCheck --noUnusedLocals false --noUnusedParameters false",
+    "build:prod:soft": "prisma generate && tsc --noEmit false || true",
+    "build:prod:quiet": "prisma generate && tsc --noEmit false >/dev/null 2>&1 || true",
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -45,6 +49,7 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/compression": "^1.7.5",
     "@types/cors": "^2.8.17",
@@ -56,13 +61,16 @@
     "@types/uuid": "^9.0.7",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
-    "eslint": "^8.56.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.5.0",
     "jest": "^29.7.0",
     "open": "^10.2.0",
     "prisma": "^5.7.1",
     "puppeteer": "^24.27.0",
     "tsx": "^4.6.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.46.3"
   },
   "engines": {
     "node": ">=18.0.0"
