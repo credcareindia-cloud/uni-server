@@ -1,0 +1,86 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_migrations:
+        description: 'Run Prisma migrations against production DB (requires DATABASE_URL secret)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: backend-prod
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # for GitHub OIDC to AWS
+      contents: read
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}    # e.g. uniqube-backend
+      ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}          # e.g. uniqube-cluster
+      ECS_SERVICE: ${{ secrets.ECS_SERVICE }}          # e.g. uniqube-backend-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npm run db:generate
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/${{ env.ECR_REPOSITORY }}:latest -t $REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:latest
+          docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+
+      - name: Force new deployment on ECS service (pull latest)
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --force-new-deployment
+
+      - name: (Optional) Run Prisma migrations against production
+        if: ${{ github.event.inputs.run_migrations == 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          npm ci --omit=dev
+          npx prisma migrate deploy
+
+      - name: Done
+        run: echo "Backend deploy completed"
