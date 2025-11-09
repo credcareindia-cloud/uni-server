@@ -5,8 +5,8 @@ import { logger } from '../utils/logger.js';
 export interface StorageConfig {
   endpoint?: string;
   region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
   bucket: string;
   forcePathStyle: boolean;
 }
@@ -18,15 +18,22 @@ export class StorageService {
   constructor(config: StorageConfig) {
     this.bucket = config.bucket;
     
-    this.s3Client = new S3Client({
+    // Only use explicit credentials if provided (for local dev with MinIO)
+    // In production ECS, omit credentials to use IAM task role
+    const s3Config: any = {
       endpoint: config.endpoint,
       region: config.region,
-      credentials: {
+      forcePathStyle: config.forcePathStyle,
+    };
+    
+    if (config.accessKeyId && config.secretAccessKey) {
+      s3Config.credentials = {
         accessKeyId: config.accessKeyId,
         secretAccessKey: config.secretAccessKey,
-      },
-      forcePathStyle: config.forcePathStyle,
-    });
+      };
+    }
+    
+    this.s3Client = new S3Client(s3Config);
 
     logger.info(`📦 Storage service initialized: ${config.endpoint || 'AWS S3'}`);
     
