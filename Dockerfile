@@ -39,7 +39,7 @@ RUN npm run build:quiet
 EXPOSE 4000
 
 # Create startup script to run migrations then start server
-RUN echo '#!/bin/sh\necho "Running database migrations..."\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start' > /app/start.sh && chmod +x /app/start.sh
+RUN printf '#!/bin/sh\necho "Running database migrations..."\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
 
 # Default command
 CMD ["/app/start.sh"]
