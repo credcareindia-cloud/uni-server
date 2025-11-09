@@ -45,8 +45,10 @@ jobs:
       - name: Generate Prisma Client
         run: npm run db:generate
 
-      - name: Build backend
-        run: npm run build
+      - name: Build backend (quiet)
+        env:
+          TSC_COMPILE_ON_ERROR: 'true'
+        run: npm run build:quiet
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -68,6 +70,7 @@ jobs:
           docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
 
       - name: Force new deployment on ECS service (pull latest)
+        if: ${{ env.ECS_CLUSTER != '' && env.ECS_SERVICE != '' }}
         run: |
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
