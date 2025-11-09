@@ -3,8 +3,18 @@
 
 FROM node:20-alpine
 
-# Install required system dependencies (optional: openssl, bash handy for debug)
-RUN apk add --no-cache openssl bash
+# Install required system dependencies for canvas (Python, build tools, Cairo, Pango, etc.)
+RUN apk add --no-cache \
+    openssl \
+    bash \
+    python3 \
+    make \
+    g++ \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev \
+    pixman-dev
 
 WORKDIR /app
 
