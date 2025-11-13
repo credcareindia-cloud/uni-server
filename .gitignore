@@ -82,3 +82,8 @@ temp/
 src/routes/model-first-upload-backup
 src/routes/projects.ts
 src/routes/uploads.ts
+
+#scripts
+scripts/
+aws/
+

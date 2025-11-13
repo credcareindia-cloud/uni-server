@@ -15,20 +15,28 @@ const router = Router();
 router.use(authenticateToken);
 
 // Validation schema for project creation with model
-const createProjectWithModelSchema = z.object({
+const uploadProcessSchema = z.object({
   projectName: z.string().min(1).max(255),
   projectDescription: z.string().max(1000).optional(),
   projectStatus: z.enum(['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional().default('ACTIVE'),
 });
 
+// In-memory processing status store (in production, use Redis)
+const processingJobs = new Map<string, {
+  id: string;
+  status: 'uploading' | 'processing' | 'completed' | 'failed';
+  progress: number;
+  message: string;
+  projectData?: any;
+  error?: string;
+  createdAt: Date;
+}>();
+
 /**
- * POST /api/create-project-with-model
- * Upload an IFC or FRAG model and create a project automatically
- * - IFC files: Converts to FRAG format and extracts metadata during conversion
- * - FRAG files: Processes directly and extracts metadata
- * This implements the model-first project creation workflow
+ * POST /api/upload-and-process
+ * Upload file and start processing - project created only AFTER successful processing
  */
-router.post('/create-project-with-model', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/upload-and-process', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -44,8 +52,6 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
   const uploadedFile: UploadedFile = Array.isArray(fileField) ? fileField[0] : fileField;
   
   // Handle both temp files and in-memory files
-  // IMPORTANT: For background processing, we keep temp file for the worker to read.
-  // If the file arrived in-memory, write it to a temp file ourselves.
   let tempFilePath = uploadedFile.tempFilePath as string | undefined;
   if (!tempFilePath) {
     const fs = await import('fs');
@@ -54,12 +60,6 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
     const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     tempFilePath = path.join(tmpDir, `upload_${unique}_${uploadedFile.name}`);
     await fs.promises.writeFile(tempFilePath, uploadedFile.data);
-  }
-  
-  // Debug: Check file data before processing
-  logger.info(`🔍 File received - Name: ${uploadedFile.name}, Size: ${uploadedFile.size}, Using temp file: ${!!tempFilePath}`);
-  if (tempFilePath) {
-    logger.info(`📂 Temp file path: ${tempFilePath}`);
   }
   
   // Validate file type (IFC or FRAG)
@@ -71,7 +71,7 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
     throw createApiError('Only .ifc or .frag files are allowed', 400);
   }
 
-  // Add file size limits - different for production vs development
+  // Add file size limits
   const fileSizeMB = uploadedFile.size / (1024 * 1024);
   const isProduction = process.env.NODE_ENV === 'production';
   
@@ -87,7 +87,7 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
   }
 
   // Check system resources before processing large files
-  if (fileSizeMB > 100) { // Check for files > 100MB
+  if (fileSizeMB > 100) {
     logSystemResources('Pre-upload system status');
     const resourceCheck = shouldRejectLargeFile(fileSizeMB);
     if (resourceCheck.reject) {
@@ -98,97 +98,58 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
   logger.info(`📁 File type: ${isIfc ? 'IFC' : 'FRAG'}, Size: ${fileSizeMB.toFixed(1)}MB`);
 
   // Validate project data
-  const projectData = createProjectWithModelSchema.parse(req.body);
+  const projectData = uploadProcessSchema.parse(req.body);
 
   try {
+    // Generate unique processing ID
+    const processingId = `proc_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    
+    // Store processing job status
+    processingJobs.set(processingId, {
+      id: processingId,
+      status: 'uploading',
+      progress: 10,
+      message: 'File uploaded successfully. Starting processing...',
+      createdAt: new Date()
+    });
+
     // Prepare target filename for FRAG (for IFC we convert to .frag)
     const finalFragName = isIfc
       ? uploadedFile.name.replace(/\.ifc$/i, '.frag')
       : uploadedFile.name;
 
-    // Start a transaction to ensure data consistency
-    const result = await prisma.$transaction(async (tx) => {
-      // Create the project first
-      const project = await tx.project.create({
-        data: {
-          name: projectData.projectName,
-          description: projectData.projectDescription || `Project created from ${uploadedFile.name}`,
-          status: projectData.projectStatus,
-          metadata: {
-            createdFromModel: true,
-            originalFilename: uploadedFile.name,
-            convertedFromIfc: isIfc,
-            modelFirst: true
-          },
-          createdBy: req.user.id
-        }
-      });
-
-      // Precompute storage key for the FRAG that will exist after background processing
-      const fileKey = storageService.generateStorageKey(String(project.id), 'TEMP_MODEL_ID', finalFragName);
-
-      // Create the model record
-      const model = await tx.model.create({
-        data: {
-          projectId: project.id,
-          type: 'FRAG',
-          originalFilename: finalFragName,
-          storageKey: fileKey,
-          sizeBytes: BigInt(0),
-          status: 'PROCESSING',
-          processingProgress: 1,
-          version: 1,
-          isActive: true
-        }
-      });
-
-      // Update project to set current model
-      const updatedProject = await tx.project.update({
-        where: { id: project.id },
-        data: {
-          currentModelId: model.id
-        }
-      });
-
-      // Now that we have the model ID, update the storage key to embed it
-      const finalKey = storageService.generateStorageKey(String(project.id), model.id, finalFragName);
-      await tx.model.update({ where: { id: model.id }, data: { storageKey: finalKey } });
-
-      return { project: updatedProject, model: { ...model, storageKey: finalKey } };
-    });
-
-    logger.info(`Project and model created: ${result.project.name} with model ${result.model.id}`);
-
-    // Enqueue background processing job. Worker will:
-    // - If IFC: convert to FRAG, upload to storageKey, extract metadata, create panels
-    // - If FRAG: upload to storageKey
+    // Start background processing - NO PROJECT CREATED YET
     enqueueIfcConversion({
-      modelId: result.model.id,
-      projectId: result.project.id,
+      processingId, // Pass processing ID to worker
       tempFilePath: tempFilePath!,
       originalFilename: uploadedFile.name,
+      finalFragName,
       uploadedByUserId: req.user.id,
+      projectData: {
+        name: projectData.projectName,
+        description: projectData.projectDescription || `Project created from ${uploadedFile.name}`,
+        status: projectData.projectStatus,
+      }
     });
 
-    // Return response with complete metadata
-    res.status(201).json({
+    // Update status to processing
+    processingJobs.set(processingId, {
+      id: processingId,
+      status: 'processing',
+      progress: 20,
+      message: isIfc ? 'Converting IFC to FRAG format...' : 'Processing FRAG file...',
+      createdAt: new Date()
+    });
+
+    logger.info(`🚀 Processing started for ${uploadedFile.name} with ID: ${processingId}`);
+
+    // Return processing ID - NO PROJECT DATA YET
+    res.status(202).json({
       success: true,
-      project: {
-        id: result.project.id,
-        name: result.project.name,
-        description: result.project.description,
-        status: result.project.status.toLowerCase().replace('_', '-'),
-        createdAt: result.project.createdAt,
-        updatedAt: result.project.updatedAt
-      },
-      model: {
-        id: result.model.id,
-        originalFilename: result.model.originalFilename,
-        status: 'processing',
-        sizeBytes: Number(result.model.sizeBytes),
-        processingProgress: 1
-      },
-      message: 'Project created. Model is processing in the background.'
+      processingId,
+      message: 'File uploaded successfully. Processing started.',
+      status: 'processing',
+      progress: 20
     });
 
     // IMPORTANT: Do not cleanup temp file here; the worker will delete it after processing
@@ -205,9 +166,92 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
       }
     }
     
-    logger.error('Error creating project with model:', error);
-    throw createApiError('Failed to create project with model', 500);
+    logger.error('Error starting file processing:', error);
+    throw createApiError('Failed to start file processing', 500);
   }
 }));
 
-export { router as modelFirstProjectRouter };
+/**
+ * GET /api/processing-status/:id
+ * Get processing status by ID
+ */
+router.get('/processing-status/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const job = processingJobs.get(id);
+
+  if (!job) {
+    throw createApiError('Processing job not found', 404);
+  }
+
+  // Clean up completed jobs older than 1 hour
+  if (job.status === 'completed' || job.status === 'failed') {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    if (job.createdAt < oneHourAgo) {
+      processingJobs.delete(id);
+      throw createApiError('Processing job expired', 404);
+    }
+  }
+
+  res.json({
+    success: true,
+    ...job
+  });
+}));
+
+/**
+ * Function called by worker to update processing status
+ */
+export function updateProcessingStatus(
+  processingId: string, 
+  status: 'processing' | 'completed' | 'failed',
+  progress: number,
+  message: string,
+  projectData?: any,
+  error?: string
+) {
+  const job = processingJobs.get(processingId);
+  if (job) {
+    processingJobs.set(processingId, {
+      ...job,
+      status,
+      progress,
+      message,
+      projectData,
+      error
+    });
+    logger.info(`📊 Processing ${processingId}: ${status} (${progress}%) - ${message}`);
+  }
+}
+
+/**
+ * Function called by worker to mark processing as completed with project data
+ */
+export function completeProcessing(processingId: string, projectData: any) {
+  updateProcessingStatus(
+    processingId,
+    'completed',
+    100,
+    'Project created successfully!',
+    projectData
+  );
+}
+
+/**
+ * Function called by worker to mark processing as failed
+ */
+export function failProcessing(processingId: string, error: string) {
+  updateProcessingStatus(
+    processingId,
+    'failed',
+    0,
+    'Processing failed',
+    undefined,
+    error
+  );
+}
+
+export { router as uploadProcessRouter };

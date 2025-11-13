@@ -18,6 +18,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
+    "make-admin": "tsx scripts/make-admin.ts",
     "db:seed": "tsx src/scripts/seed.ts",
     "lint": "eslint src --ext .ts",
     "test": "jest"

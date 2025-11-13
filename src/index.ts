@@ -13,6 +13,7 @@ import { modelRoutes } from './routes/models.js';
 import { notificationRoutes } from './routes/notifications.js';
 // import { uploadRoutes } from './routes/uploads.js';
 import { modelFirstProjectRouter } from './routes/model-first-project.js';
+import { uploadProcessRouter } from './routes/upload-process.js';
 import { modelDownloadRouter } from './routes/model-download.js';
 import panelRoutes from './routes/panels.js';
 import groupRoutes from './routes/groups.js';
@@ -22,6 +23,7 @@ import adminRoutes from './routes/admin.js';
 import userRoutes from './routes/user.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
+import { startModelProcessingQueue } from './queue/index.js';
 
 // Load environment variables
 dotenv.config();
@@ -120,6 +122,7 @@ app.use('/api/group-management', groupManagementRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api', modelFirstProjectRouter);
+app.use('/api', uploadProcessRouter);
 // app.use('/api', metadataUpdateRouter);
 app.use('/api', modelDownloadRouter);
 
@@ -151,6 +154,8 @@ app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📊 Health check: http://localhost:${PORT}/health`);
   logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  // Start background workers queue
+  startModelProcessingQueue();
 });
 
 export default app;

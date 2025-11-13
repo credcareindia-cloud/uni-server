@@ -47,7 +47,7 @@ export class IfcConverterService {
       logger.info(`✅ IFC file loaded, model ID: ${modelID}`);
       
       // Extract spatial structure
-      const storeys: Array<{ name: string; elementCount: number }> = [];
+      const storeys: Array<{ name: string; elementCount: number; elements: Array<{ id: string; name: string; type: string; material: string }> }> = [];
       const elementTypes: Record<string, number> = {};
       let totalElements = 0;
       
@@ -100,7 +100,7 @@ export class IfcConverterService {
         
         // Get elements in this storey using spatial containment
         let elementCount = 0;
-        const storeyElements: Array<{ id: string; name: string; type: string }> = [];
+        const storeyElements: Array<{ id: string; name: string; type: string; material: string }> = [];
         
         try {
           const relContained = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE);
@@ -202,7 +202,7 @@ export class IfcConverterService {
     ifcBuffer: Buffer,
     onProgress?: (progress: number, message: string) => void
   ): Promise<{
-    fragmentsBuffer: ArrayBuffer;
+    fragmentsBuffer: Uint8Array;
     metadata: {
       totalElements: number;
       storeys: Array<{ name: string; elementCount: number }>;
@@ -247,7 +247,7 @@ export class IfcConverterService {
         }
       };
 
-      const fragmentsBuffer = await this.serializer.process({
+      const fragmentsBuffer: Uint8Array = await (this.serializer as any).process({
         bytes: ifcBytes,
         progressCallback
       });
