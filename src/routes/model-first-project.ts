@@ -179,7 +179,23 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
         description: result.project.description,
         status: result.project.status.toLowerCase().replace('_', '-'),
         createdAt: result.project.createdAt,
-        updatedAt: result.project.updatedAt
+        updatedAt: result.project.updatedAt,
+        // Add stats that frontend expects
+        stats: {
+          totalModels: 1,
+          totalGroups: 0,
+          totalPanels: 0
+        },
+        // Add fields that frontend might expect
+        panelsCount: 0,
+        groupsCount: 0,
+        modelsCount: 1,
+        currentModel: {
+          id: result.model.id,
+          originalFilename: result.model.originalFilename,
+          status: 'processing',
+          sizeBytes: Number(result.model.sizeBytes)
+        }
       },
       model: {
         id: result.model.id,
