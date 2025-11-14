@@ -174,6 +174,9 @@ router.get('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response)
           processingProgress: true,
           elementCount: true,
           spatialStructure: true,
+          category: true,
+          displayName: true,
+          isMultiFile: true,
           createdAt: true,
           updatedAt: true
         }
@@ -190,6 +193,9 @@ router.get('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response)
           processingProgress: true,
           elementCount: true,
           spatialStructure: true,
+          category: true,
+          displayName: true,
+          isMultiFile: true,
           createdAt: true,
           updatedAt: true
         },
@@ -346,6 +352,267 @@ router.get('/:id/activities', asyncHandler(async (req: AuthenticatedRequest, res
   // For now, return an empty array
   // TODO: Implement activity tracking in the future
   res.json([]);
+}));
+
+/**
+ * GET /api/projects/:id/panels
+ * Get all panels for a project with optional model filtering
+ */
+router.get('/:id/panels', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const { modelId } = req.query; // Optional model filter
+  const projectId = parseInt(id);
+
+  if (isNaN(projectId)) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  // Check if project exists and user owns it
+  const project = await prisma.project.findFirst({
+    where: {
+      id: projectId,
+      createdBy: req.user.id
+    }
+  });
+
+  if (!project) {
+    throw createApiError('Project not found', 404);
+  }
+
+  // Build where clause for panel filtering
+  const where: any = { projectId };
+  
+  // If modelId is provided, filter by specific model
+  if (modelId && modelId !== 'all') {
+    where.modelId = modelId as string;
+  }
+
+  // Get panels with model information
+  const panels = await prisma.panel.findMany({
+    where,
+    select: {
+      id: true,
+      projectId: true,
+      modelId: true,
+      elementId: true,
+      name: true,
+      tag: true,
+      objectType: true,
+      dimensions: true,
+      location: true,
+      material: true,
+      weight: true,
+      area: true,
+      productionDate: true,
+      shippingDate: true,
+      installationDate: true,
+      notes: true,
+      metadata: true,
+      createdAt: true,
+      updatedAt: true,
+      // Include model information for display
+      model: {
+        select: {
+          id: true,
+          originalFilename: true,
+          category: true,
+          displayName: true
+        }
+      },
+      // Include group assignments
+      groups: {
+        include: {
+          group: {
+            select: {
+              id: true,
+              name: true
+            }
+          }
+        }
+      },
+      // Include status assignments
+      statuses: {
+        include: {
+          status: {
+            select: {
+              id: true,
+              name: true,
+              icon: true,
+              color: true
+            }
+          }
+        }
+      }
+    },
+    orderBy: [
+      { modelId: 'asc' }, // Group by model first
+      { name: 'asc' }     // Then by name
+    ]
+  });
+
+  // Transform panels to include model info and flatten relationships
+  const transformedPanels = panels.map(panel => ({
+    id: panel.id,
+    projectId: panel.projectId,
+    modelId: panel.modelId,
+    elementId: panel.elementId,
+    name: panel.name,
+    tag: panel.tag,
+    objectType: panel.objectType,
+    dimensions: panel.dimensions,
+    location: panel.location,
+    material: panel.material,
+    weight: panel.weight,
+    area: panel.area,
+    productionDate: panel.productionDate,
+    shippingDate: panel.shippingDate,
+    installationDate: panel.installationDate,
+    notes: panel.notes,
+    metadata: panel.metadata,
+    createdAt: panel.createdAt,
+    updatedAt: panel.updatedAt,
+    // Model information
+    model: panel.model,
+    // Flattened group information
+    groups: panel.groups.map(pg => pg.group.name),
+    // Status information (use the first status if multiple, or derive from panel status)
+    status: panel.statuses.length > 0 
+      ? panel.statuses[0].status.name 
+      : 'READY_FOR_PRODUCTION', // Default status
+    // Additional display fields
+    storey: panel.location || 'Unknown',
+    description: panel.notes || `${panel.objectType || 'Panel'} - ${panel.name}`,
+    details: `Material: ${panel.material || 'N/A'}, Location: ${panel.location || 'N/A'}`
+  }));
+
+  logger.info(`✅ Fetched ${transformedPanels.length} panels for project ${projectId}${modelId ? ` (model: ${modelId})` : ' (all models)'}`);
+
+  res.json({
+    panels: transformedPanels,
+    total: transformedPanels.length,
+    modelFilter: modelId || 'all'
+  });
+}));
+
+/**
+ * GET /api/projects/:id/models-list
+ * Get all models for a project (for model selection dropdown)
+ */
+router.get('/:id/models-list', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const projectId = parseInt(id);
+
+  if (isNaN(projectId)) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  // Check if project exists and user owns it
+  const project = await prisma.project.findFirst({
+    where: {
+      id: projectId,
+      createdBy: req.user.id
+    },
+    include: {
+      modelHistory: {
+        where: {
+          status: 'READY' // Only include ready models
+        },
+        select: {
+          id: true,
+          originalFilename: true,
+          category: true,
+          displayName: true,
+          isActive: true,
+          elementCount: true,
+          sizeBytes: true,
+          createdAt: true
+        },
+        orderBy: {
+          createdAt: 'desc'
+        }
+      }
+    }
+  });
+
+  if (!project) {
+    throw createApiError('Project not found', 404);
+  }
+
+  // Get panel counts for each model to use as fallback for elementCount
+  const panelCounts = await Promise.all(
+    project.modelHistory.map(async (model) => {
+      const panelCount = await prisma.panel.count({
+        where: { 
+          projectId: projectId,
+          modelId: model.id 
+        }
+      });
+      return { modelId: model.id, panelCount };
+    })
+  );
+
+  const panelCountMap = Object.fromEntries(
+    panelCounts.map(pc => [pc.modelId, pc.panelCount])
+  );
+
+  // Transform models for dropdown display and remove duplicates
+  const uniqueModels = new Map();
+  
+  project.modelHistory.forEach(model => {
+    // Skip if we already have this model (by ID)
+    if (uniqueModels.has(model.id)) {
+      return;
+    }
+    
+    // Create a more descriptive name
+    const baseName = model.originalFilename.replace(/\.(ifc|frag)$/i, '');
+    const panelCount = panelCountMap[model.id] || 0;
+    
+    // Improve category detection from filename if category is 'OTHER'
+    let finalCategory = model.category;
+    if (model.category === 'OTHER' || !model.category) {
+      const filename = model.originalFilename.toLowerCase();
+      if (filename.includes('struct') || filename.includes('arch')) {
+        finalCategory = 'STRUCTURE';
+      } else if (filename.includes('mep') || filename.includes('plumb') || filename.includes('hvac')) {
+        finalCategory = 'MEP';
+      } else if (filename.includes('elect') || filename.includes('power') || filename.includes('light')) {
+        finalCategory = 'ELECTRICAL';
+      } else {
+        finalCategory = 'OTHER';
+      }
+    }
+    
+    const displayName = model.displayName && model.displayName !== 'Other' 
+      ? model.displayName 
+      : baseName;
+    
+    uniqueModels.set(model.id, {
+      id: model.id,
+      name: displayName,
+      filename: model.originalFilename,
+      category: finalCategory,
+      isActive: model.isActive,
+      elementCount: model.elementCount || panelCount || 0, // Use panel count as fallback
+      sizeBytes: Number(model.sizeBytes),
+      createdAt: model.createdAt
+    });
+  });
+  
+  const models = Array.from(uniqueModels.values());
+
+  res.json({
+    models,
+    total: models.length
+  });
 }));
 
 export default router;

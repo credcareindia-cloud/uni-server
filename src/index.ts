@@ -14,6 +14,7 @@ import { notificationRoutes } from './routes/notifications.js';
 // import { uploadRoutes } from './routes/uploads.js';
 import { modelFirstProjectRouter } from './routes/model-first-project.js';
 import { uploadProcessRouter } from './routes/upload-process.js';
+import { multiFileUploadRouter } from './routes/multi-file-upload.js';
 import { modelDownloadRouter } from './routes/model-download.js';
 import panelRoutes from './routes/panels.js';
 import groupRoutes from './routes/groups.js';
@@ -123,6 +124,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api', modelFirstProjectRouter);
 app.use('/api', uploadProcessRouter);
+app.use('/api', multiFileUploadRouter);
 // app.use('/api', metadataUpdateRouter);
 app.use('/api', modelDownloadRouter);
 

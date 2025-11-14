@@ -10,6 +10,33 @@ export interface IfcJobData {
   uploadedByUserId: string;
 }
 
+// Handle multi-file processing status updates
+function handleMultiFileStatusUpdate(msg: any) {
+  logger.info(`🔄 Received multi-file status update: jobId=${msg.jobId}, fileIndex=${msg.fileIndex}, status=${msg.status}, progress=${msg.progress}`);
+  try {
+    import('../routes/multi-file-upload.js').then(module => {
+      if (module.updateMultiFileStatus) {
+        logger.info(`📊 Calling updateMultiFileStatus for jobId=${msg.jobId}`);
+        module.updateMultiFileStatus(
+          msg.jobId,
+          msg.fileIndex,
+          msg.status,
+          msg.progress,
+          msg.message,
+          msg.modelData,
+          msg.error
+        );
+      } else {
+        logger.error('❌ updateMultiFileStatus function not found in module');
+      }
+    }).catch(err => {
+      logger.error('❌ Failed to import multi-file-upload module:', err);
+    });
+  } catch (err) {
+    logger.warn('Failed to update multi-file status:', err);
+  }
+}
+
 // New interface for process-first workflow
 export interface ProcessFirstJobData {
   processingId: string;
@@ -22,6 +49,11 @@ export interface ProcessFirstJobData {
     description: string;
     status: string;
   };
+  // Multi-file context (optional)
+  isMultiFile?: boolean;
+  multiFileJobId?: string;
+  fileIndex?: number;
+  category?: string;
 }
 
 interface InternalJob extends IfcJobData {
@@ -78,6 +110,10 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
       finalFragName: pfJob.finalFragName,
       uploadedByUserId: pfJob.uploadedByUserId,
       projectData: pfJob.projectData,
+      isMultiFile: pfJob.isMultiFile,
+      multiFileJobId: pfJob.multiFileJobId,
+      fileIndex: pfJob.fileIndex,
+      category: pfJob.category,
     };
   } else {
     const legacyJob = job as InternalJob;
@@ -94,6 +130,7 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
   ACTIVE.set(job.id, worker);
 
   worker.on('message', (msg) => {
+    logger.info(`📨 Worker[${jobId}] message received: ${JSON.stringify(msg)}`);
     if (typeof msg === 'object' && msg) {
       if (msg.type === 'log') {
         logger.info(`👷 Worker[${jobId}]: ${msg.message}`);
@@ -101,8 +138,16 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
         logger.info(`👷 Worker[${jobId}] progress: ${msg.value}% - ${msg.message || ''}`);
       } else if (msg.type === 'status_update' && isProcessFirst) {
         // Handle process-first status updates
+        logger.info(`📊 Handling status_update for ${jobId}`);
         handleProcessingStatusUpdate(msg);
+      } else if (msg.type === 'multi_status_update' && isProcessFirst) {
+        logger.info(`📊 Handling multi_status_update for ${jobId}`);
+        handleMultiFileStatusUpdate(msg);
+      } else {
+        logger.warn(`⚠️ Unknown message type: ${msg.type} from worker ${jobId}`);
       }
+    } else {
+      logger.warn(`⚠️ Invalid message format from worker ${jobId}: ${JSON.stringify(msg)}`);
     }
   });
 

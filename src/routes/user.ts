@@ -1,17 +1,16 @@
-import express from 'express';
-import { PrismaClient } from '@prisma/client';
-import { authenticateToken } from '../middleware/auth.js';
+import { Router } from 'express';
+import { prisma } from '../config/database.js';
+import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 
-const router = express.Router();
-const prisma = new PrismaClient();
+const router = Router();
 
 // Apply authentication middleware to all routes
 router.use(authenticateToken);
 
-// Get current user profile
-router.get('/profile', async (req, res) => {
+// Get user profile
+router.get('/profile', async (req: AuthenticatedRequest, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user!.id;
 
     const user = await prisma.user.findUnique({
       where: { id: userId },

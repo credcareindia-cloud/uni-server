@@ -81,7 +81,14 @@ model Model {
   storageKey       String      @map("storage_key") // S3/MinIO object key
   type             ModelType   @default(FRAG)
   sizeBytes        BigInt      @map("size_bytes")
-  status           ModelStatus @default(READY) // FRAG files are instantly ready!
+  status           ModelStatus @default(READY) // FRAG files are instantly ready for viewing!
+  
+  // Multi-file project support
+  category         ModelCategory @default(OTHER) // Building component category
+  displayName      String?       @map("display_name") // User-friendly name for the component
+  isMultiFile      Boolean       @default(false) @map("is_multi_file") // Part of multi-file project
+  multiFileJobId   String?       @map("multi_file_job_id") // Reference to multi-file processing job
+  fileIndex        Int?          @map("file_index") // Order within multi-file project
   
   // Version information
   version          Int         @default(1) // Model version number
@@ -323,6 +330,13 @@ enum ProjectStatus {
 enum ModelType {
   FRAG  // Primary 3D format - instantly ready for viewing!
   // Removed IFC - using FRAG viewer exclusively now
+}
+
+enum ModelCategory {
+  STRUCTURE   // Structural components (beams, columns, slabs)
+  MEP         // Mechanical, Electrical, Plumbing
+  ELECTRICAL  // Electrical systems specifically
+  OTHER       // Other/miscellaneous components
 }
 
 enum ModelStatus {

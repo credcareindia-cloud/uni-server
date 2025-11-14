@@ -17,6 +17,11 @@ interface WorkerData {
     description: string;
     status: string;
   };
+  // Multi-file context (optional)
+  isMultiFile?: boolean;
+  multiFileJobId?: string;
+  fileIndex?: number;
+  category?: string;
 }
 
 function post(type: string, payload: any) {
@@ -41,14 +46,47 @@ async function updateProcessingStatus(
   });
 }
 
+// Report per-file status back to multi-file coordinator
+async function updateMultiFileStatus(
+  jobId: string,
+  fileIndex: number,
+  status: 'processing' | 'completed' | 'failed',
+  progress: number,
+  message: string,
+  modelData?: any,
+  error?: string
+) {
+  post('log', { message: `🔄 Worker sending multi-file status: jobId=${jobId}, progress=${progress}%` });
+  post('multi_status_update', {
+    jobId,
+    fileIndex,
+    status,
+    progress,
+    message,
+    modelData,
+    error
+  });
+}
+
 async function run() {
   const data = workerData as WorkerData;
   const isIfc = data.originalFilename.toLowerCase().endsWith('.ifc');
   const isFrag = data.originalFilename.toLowerCase().endsWith('.frag');
+  const isMulti = !!data.isMultiFile;
+  const multiJobId = data.multiFileJobId;
+  const fileIndex = typeof data.fileIndex === 'number' ? data.fileIndex : 0;
 
   // Monitor memory usage
   const initialMemory = process.memoryUsage();
   post('log', { message: `🚀 Starting processing for ${data.processingId} (${isIfc ? 'IFC' : 'FRAG'})` });
+  post('log', { message: `📋 Multi-file mode: ${isMulti}, JobId: ${multiJobId}, FileIndex: ${fileIndex}` });
+  
+  // Set environment variables for direct IFC converter progress updates
+  if (isMulti && multiJobId) {
+    process.env.MULTI_FILE_JOB_ID = multiJobId;
+    process.env.MULTI_FILE_INDEX = fileIndex.toString();
+    post('log', { message: `🔧 Set env vars for direct progress: MULTI_FILE_JOB_ID=${multiJobId}, MULTI_FILE_INDEX=${fileIndex}` });
+  }
   post('log', { message: `Initial memory: ${(initialMemory.heapUsed / 1024 / 1024).toFixed(1)}MB` });
 
   // Set up memory monitoring
@@ -91,6 +129,17 @@ async function run() {
         40,
         'Extracting IFC metadata and converting to FRAG...'
       );
+      
+      // Also update multi-file status
+      if (isMulti && multiJobId) {
+        await updateMultiFileStatus(
+          multiJobId,
+          fileIndex,
+          'processing',
+          40,
+          'Extracting IFC metadata and converting to FRAG...'
+        );
+      }
 
       // Convert to FRAG with progress updates
       const result = await ifcConverter.convertIfcToFragments(ifcBuffer, async (p, message) => {
@@ -101,6 +150,17 @@ async function run() {
           pct,
           message || 'Converting IFC to FRAG...'
         );
+        
+        // Also update multi-file status if this is part of a multi-file job
+        if (isMulti && multiJobId) {
+          await updateMultiFileStatus(
+            multiJobId,
+            fileIndex,
+            'processing',
+            pct,
+            message || 'Converting IFC to FRAG...'
+          );
+        }
       });
 
       fragBuffer = Buffer.from(result.fragmentsBuffer);
@@ -119,8 +179,70 @@ async function run() {
         60,
         'FRAG file ready for processing...'
       );
+      
+      // Also update multi-file status
+      if (isMulti && multiJobId) {
+        await updateMultiFileStatus(
+          multiJobId,
+          fileIndex,
+          'processing',
+          60,
+          'FRAG file ready for processing...'
+        );
+      }
     } else {
       throw new Error('Unsupported file type');
+    }
+
+    // If this job is part of a multi-file upload, don't create the project here.
+    if (isMulti && multiJobId) {
+      await updateProcessingStatus(
+        data.processingId,
+        'processing',
+        85,
+        'Preparing model for project assembly...'
+      );
+      
+      // Also update multi-file status
+      await updateMultiFileStatus(
+        multiJobId,
+        fileIndex,
+        'processing',
+        85,
+        'Preparing model for project assembly...'
+      );
+
+      // Persist FRAG to a temp path for the finalizer to upload later
+      const outDir = path.dirname(data.tempFilePath);
+      const outPath = path.join(outDir, `${Date.now()}_${data.finalFragName}`);
+      await fs.writeFile(outPath, fragBuffer);
+
+      // Notify multi-file coordinator with temp path and metadata
+      await updateMultiFileStatus(
+        multiJobId,
+        fileIndex,
+        'completed',
+        100,
+        'File processed',
+        {
+          tempFragPath: outPath,
+          metadata: extractedMetadata,
+          originalFilename: data.originalFilename,
+          finalFragName: data.finalFragName,
+          isIfc
+        }
+      );
+
+      await updateProcessingStatus(
+        data.processingId,
+        'completed',
+        100,
+        'Ready for project assembly'
+      );
+
+      // Cleanup source temp file
+      try { await fs.unlink(data.tempFilePath); } catch {}
+      return; // Early return for multi-file path
     }
 
     await updateProcessingStatus(
@@ -130,7 +252,7 @@ async function run() {
       'Creating project and uploading model...'
     );
 
-    // NOW CREATE THE PROJECT - Only after successful processing
+    // Single-file path: create the project now
     const result = await prisma.$transaction(async (tx) => {
       // Create the project first
       const project = await tx.project.create({
