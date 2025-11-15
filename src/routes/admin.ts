@@ -39,10 +39,11 @@ router.get('/users', async (req: AuthenticatedRequest, res: Response) => {
         name: true,
         email: true,
         role: true,
+        lastLogin: true,
         createdAt: true,
         _count: {
           select: {
-            projects: true
+            projectMemberships: true
           }
         }
       },
@@ -56,9 +57,10 @@ router.get('/users', async (req: AuthenticatedRequest, res: Response) => {
       id: user.id,
       name: user.name,
       email: user.email,
-      role: user.role.toLowerCase(),
+      role: user.role,
       status: 'active',
-      projects: user._count.projects,
+      projects: user._count.projectMemberships,
+      lastLogin: user.lastLogin ? new Date(user.lastLogin).toLocaleDateString() : 'Never',
       createdAt: user.createdAt
     }));
 
@@ -124,9 +126,10 @@ router.post('/users', async (req: AuthenticatedRequest, res: Response) => {
       id: newUser.id,
       name: newUser.name,
       email: newUser.email,
-      role: newUser.role.toLowerCase(),
+      role: newUser.role,
       status: 'active',
       projects: 0,
+      lastLogin: 'Never',
       createdAt: newUser.createdAt
     });
   } catch (error) {
@@ -232,10 +235,11 @@ router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) 
         name: true,
         email: true,
         role: true,
+        lastLogin: true,
         createdAt: true,
         _count: {
           select: {
-            projects: true
+            projectMemberships: true
           }
         }
       }
@@ -245,9 +249,10 @@ router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) 
       id: updatedUser.id,
       name: updatedUser.name,
       email: updatedUser.email,
-      role: updatedUser.role.toLowerCase(),
+      role: updatedUser.role,
       status: 'active',
-      projects: updatedUser._count.projects,
+      projects: updatedUser._count.projectMemberships,
+      lastLogin: updatedUser.lastLogin ? new Date(updatedUser.lastLogin).toLocaleDateString() : 'Never',
       createdAt: updatedUser.createdAt
     });
   } catch (error) {
@@ -300,7 +305,13 @@ router.patch('/users/:userId/role', async (req: AuthenticatedRequest, res: Respo
         name: true,
         email: true,
         role: true,
-        createdAt: true
+        lastLogin: true,
+        createdAt: true,
+        _count: {
+          select: {
+            projectMemberships: true
+          }
+        }
       }
     });
 
@@ -308,8 +319,10 @@ router.patch('/users/:userId/role', async (req: AuthenticatedRequest, res: Respo
       id: updatedUser.id,
       name: updatedUser.name,
       email: updatedUser.email,
-      role: updatedUser.role.toLowerCase(),
+      role: updatedUser.role,
       status: 'active',
+      projects: updatedUser._count.projectMemberships,
+      lastLogin: updatedUser.lastLogin ? new Date(updatedUser.lastLogin).toLocaleDateString() : 'Never',
       createdAt: updatedUser.createdAt
     });
   } catch (error) {
@@ -482,8 +495,8 @@ router.post('/projects/:projectId/members', async (req: AuthenticatedRequest, re
       userId: member.user.id,
       name: member.user.name,
       email: member.user.email,
-      globalRole: member.user.role.toLowerCase(),
-      projectRole: member.role.toLowerCase(),
+      globalRole: member.user.role,
+      projectRole: member.role,
       joinedAt: member.createdAt,
       userCreatedAt: member.user.createdAt
     });
@@ -572,8 +585,8 @@ router.patch('/projects/:projectId/members/:userId', async (req: AuthenticatedRe
       userId: updatedMember.user.id,
       name: updatedMember.user.name,
       email: updatedMember.user.email,
-      globalRole: updatedMember.user.role.toLowerCase(),
-      projectRole: updatedMember.role.toLowerCase(),
+      globalRole: updatedMember.user.role,
+      projectRole: updatedMember.role,
       joinedAt: updatedMember.createdAt,
       userCreatedAt: updatedMember.user.createdAt
     });
@@ -753,7 +766,7 @@ router.get('/projects/:projectId/assignable-users', async (req: AuthenticatedReq
       id: user.id,
       name: user.name,
       email: user.email,
-      role: user.role.toLowerCase(),
+      role: user.role,
       assigned: user.projectMemberships.length > 0
     }));
 

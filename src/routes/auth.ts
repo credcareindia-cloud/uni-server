@@ -145,6 +145,12 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
     throw createApiError('Invalid email or password', 401);
   }
 
+  // Update last login
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { lastLogin: new Date() }
+  });
+
   // Generate JWT token
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) {

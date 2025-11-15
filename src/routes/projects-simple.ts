@@ -25,10 +25,20 @@ const updateProjectSchema = z.object({
 
 const querySchema = z.object({
   page: z.string().transform(val => parseInt(val) || 1).optional(),
-  limit: z.string().transform(val => Math.min(parseInt(val) || 10, 100)).optional(),
+  limit: z.string().transform(val => Math.min(parseInt(val) || 10000, 10000)).optional(),
   status: z.enum(['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
   search: z.string().optional(),
 });
+
+/**
+ * Helper function to resolve project ID
+ * Uses global ID - displayNumber is only for display purposes
+ */
+async function resolveProjectId(idParam: string): Promise<number | null> {
+  const id = parseInt(idParam);
+  if (isNaN(id)) return null;
+  return id;
+}
 
 /**
  * GET /api/projects
@@ -118,6 +128,7 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
   // Transform response
   const transformedProjects = projects.map(project => ({
     id: String(project.id),
+    displayNumber: project.displayNumber,
     name: project.name,
     description: project.description,
     status: project.status.toLowerCase().replace('_', '-'),
@@ -152,7 +163,7 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
 
 /**
  * GET /api/projects/:id
- * Get a specific project by ID
+ * Get a specific project by ID (supports both global ID and displayNumber)
  */
 router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -160,9 +171,9 @@ router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: Authen
   }
 
   const { id } = req.params;
-  const projectId = parseInt(id);
+  const projectId = await resolveProjectId(id);
 
-  if (isNaN(projectId)) {
+  if (!projectId) {
     throw createApiError('Invalid project ID', 400);
   }
 
@@ -227,6 +238,7 @@ router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: Authen
   // Transform response
   const transformedProject = {
     id: String(project.id),
+    displayNumber: project.displayNumber,
     name: project.name,
     description: project.description,
     status: project.status.toLowerCase().replace('_', '-'),
@@ -269,7 +281,7 @@ router.post('/', asyncHandler(async (req: any, res: Response) => {
 
 /**
  * PUT /api/projects/:id
- * Update a project
+ * Update a project (supports both global ID and displayNumber)
  */
 router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -277,22 +289,11 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
   }
 
   const { id } = req.params;
-  const projectId = parseInt(id);
+  const projectId = await resolveProjectId(id);
   const updateData = updateProjectSchema.parse(req.body);
 
-  if (isNaN(projectId)) {
+  if (!projectId) {
     throw createApiError('Invalid project ID', 400);
-  }
-
-  // Check if project exists (authorization already handled by middleware)
-  const existingProject = await prisma.project.findUnique({
-    where: {
-      id: projectId
-    }
-  });
-
-  if (!existingProject) {
-    throw createApiError('Project not found', 404);
   }
 
   const project = await prisma.project.update({
@@ -318,6 +319,7 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
   // Transform response
   const transformedProject = {
     id: project.id,
+    displayNumber: project.displayNumber,
     name: project.name,
     description: project.description,
     status: project.status.toLowerCase().replace('_', '-'),
@@ -346,9 +348,9 @@ router.get('/:id/activities', requireProjectRole('VIEWER'), asyncHandler(async (
   }
 
   const { id } = req.params;
-  const projectId = parseInt(id);
+  const projectId = await resolveProjectId(id);
 
-  if (isNaN(projectId)) {
+  if (!projectId) {
     throw createApiError('Invalid project ID', 400);
   }
 
@@ -369,9 +371,9 @@ router.get('/:id/panels', requireProjectRole('VIEWER'), asyncHandler(async (req:
 
   const { id } = req.params;
   const { modelId } = req.query; // Optional model filter
-  const projectId = parseInt(id);
+  const projectId = await resolveProjectId(id);
 
-  if (isNaN(projectId)) {
+  if (!projectId) {
     throw createApiError('Invalid project ID', 400);
   }
 
@@ -503,9 +505,9 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
   }
 
   const { id } = req.params;
-  const projectId = parseInt(id);
+  const projectId = await resolveProjectId(id);
 
-  if (isNaN(projectId)) {
+  if (!projectId) {
     throw createApiError('Invalid project ID', 400);
   }
 

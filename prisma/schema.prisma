@@ -38,6 +38,7 @@ model User {
   location       String?
   company        String?
   userRole       String?  @map("user_role")
+  lastLogin      DateTime? @map("last_login")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
@@ -71,6 +72,7 @@ model Session {
 
 model Project {
   id             Int           @id @default(autoincrement())
+  displayNumber  Int           @map("display_number")
   name           String
   description    String?
   status         ProjectStatus @default(PLANNING)
@@ -95,6 +97,8 @@ model Project {
   statuses      Status[]       // Custom statuses for this project
   members       ProjectMember[] // Project members and roles
 
+  @@unique([organizationId, displayNumber])
+  @@index([organizationId])
   @@map("projects")
 }
 

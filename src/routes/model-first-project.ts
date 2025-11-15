@@ -108,6 +108,14 @@ router.post('/create-project-with-model', requireAdmin, asyncHandler(async (req:
 
     // Start a transaction to ensure data consistency
     const result = await prisma.$transaction(async (tx) => {
+      // Get the max displayNumber for this organization
+      const maxProjectInOrg = await tx.project.findFirst({
+        where: { organizationId: req.user.organizationId },
+        orderBy: { displayNumber: 'desc' },
+        select: { displayNumber: true }
+      });
+      const nextDisplayNumber = (maxProjectInOrg?.displayNumber || 0) + 1;
+
       // Create the project first
       const project = await tx.project.create({
         data: {
@@ -115,6 +123,7 @@ router.post('/create-project-with-model', requireAdmin, asyncHandler(async (req:
           description: projectData.projectDescription || `Project created from ${uploadedFile.name}`,
           status: projectData.projectStatus,
           organizationId: req.user.organizationId,
+          displayNumber: nextDisplayNumber,
           metadata: {
             createdFromModel: true,
             originalFilename: uploadedFile.name,
@@ -185,6 +194,7 @@ router.post('/create-project-with-model', requireAdmin, asyncHandler(async (req:
       success: true,
       project: {
         id: String(result.project.id),
+        displayNumber: result.project.displayNumber,
         name: result.project.name,
         description: result.project.description,
         status: result.project.status.toLowerCase().replace('_', '-'),

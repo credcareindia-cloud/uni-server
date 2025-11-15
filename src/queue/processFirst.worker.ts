@@ -265,6 +265,14 @@ async function run() {
 
     // Single-file path: create the project now
     const result = await prisma.$transaction(async (tx) => {
+      // Get the max displayNumber for this organization
+      const maxProjectInOrg = await tx.project.findFirst({
+        where: { organizationId },
+        orderBy: { displayNumber: 'desc' },
+        select: { displayNumber: true }
+      });
+      const nextDisplayNumber = (maxProjectInOrg?.displayNumber || 0) + 1;
+
       // Create the project first
       const project = await tx.project.create({
         data: {
@@ -272,6 +280,7 @@ async function run() {
           description: data.projectData.description,
           status: 'ACTIVE',
           organizationId,
+          displayNumber: nextDisplayNumber,
           metadata: {
             createdFromModel: true,
             originalFilename: data.originalFilename,

@@ -411,20 +411,31 @@ export function updateMultiFileStatus(
           other: 'OTHER'
         };
 
-        // Create project
-        const project = await prisma.project.create({
-          data: {
-            name: job.projectBase.name,
-            description: job.projectBase.description,
-            status: job.projectBase.status as any,
-            organizationId: job.projectBase.organizationId,
-            metadata: {
-              createdFromMultiFile: true,
-              totalFiles: job.totalFiles,
-              categories: job.files.map(f => f.category)
-            },
-            createdBy: job.projectBase.createdBy
-          }
+        // Create project with transaction to handle displayNumber
+        const project = await prisma.$transaction(async (tx) => {
+          // Get the max displayNumber for this organization
+          const maxProjectInOrg = await tx.project.findFirst({
+            where: { organizationId: job.projectBase.organizationId },
+            orderBy: { displayNumber: 'desc' },
+            select: { displayNumber: true }
+          });
+          const nextDisplayNumber = (maxProjectInOrg?.displayNumber || 0) + 1;
+
+          return tx.project.create({
+            data: {
+              name: job.projectBase.name,
+              description: job.projectBase.description,
+              status: job.projectBase.status as any,
+              organizationId: job.projectBase.organizationId,
+              displayNumber: nextDisplayNumber,
+              metadata: {
+                createdFromMultiFile: true,
+                totalFiles: job.totalFiles,
+                categories: job.files.map(f => f.category)
+              },
+              createdBy: job.projectBase.createdBy
+            }
+          });
         });
 
         // Add creator as project member (OWNER)
