@@ -57,6 +57,7 @@ interface MultiFileProcessingJob {
     description: string;
     status: string;
     createdBy: string;
+    organizationId: string;
   };
   error?: string;
   createdAt: Date;
@@ -194,6 +195,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
         description: projectData.projectDescription || `Project with ${validatedFiles.length} files`,
         status: projectData.projectStatus,
         createdBy: req.user.id,
+        organizationId: req.user!.organizationId,
       }
     };
 
@@ -415,12 +417,22 @@ export function updateMultiFileStatus(
             name: job.projectBase.name,
             description: job.projectBase.description,
             status: job.projectBase.status as any,
+            organizationId: job.projectBase.organizationId,
             metadata: {
               createdFromMultiFile: true,
               totalFiles: job.totalFiles,
               categories: job.files.map(f => f.category)
             },
             createdBy: job.projectBase.createdBy
+          }
+        });
+
+        // Add creator as project member (OWNER)
+        await prisma.projectMember.create({
+          data: {
+            projectId: project.id,
+            userId: job.projectBase.createdBy,
+            role: 'OWNER'
           }
         });
 

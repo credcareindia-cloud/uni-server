@@ -86,4 +86,8 @@ src/routes/uploads.ts
 #scripts
 scripts/
 aws/
+test-full-rbac.js
+test-rbac.js
+create-admin.js
+test-rbac-detailed.js
 

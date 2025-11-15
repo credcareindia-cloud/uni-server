@@ -10,27 +10,48 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  name         String
-  role         UserRole @default(USER)
-  avatar       String?
-  phone        String?
-  location     String?
-  company      String?
-  userRole     String?  @map("user_role")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique // URL-friendly identifier
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   // Relations
-  projects              Project[]
-  notifications         Notification[]
-  sessions              Session[]
-  statusHistory         StatusHistory[]
+  users    User[]
+  projects Project[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  passwordHash   String   @map("password_hash")
+  name           String
+  role           UserRole @default(ADMIN)
+  organizationId String   @map("organization_id")
+  createdBy      String?  @map("created_by")
+  avatar         String?
+  phone          String?
+  location       String?
+  company        String?
+  userRole       String?  @map("user_role")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization           Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator                User?            @relation("UserCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdUsers           User[]           @relation("UserCreator")
+  projects               Project[]
+  notifications          Notification[]
+  sessions               Session[]
+  statusHistory          StatusHistory[]
   panelStatusAssignments PanelStatus[]
   panelGroupAssignments  PanelGroup[]
+  projectMemberships     ProjectMember[]
 
   @@map("users")
 }
@@ -49,13 +70,14 @@ model Session {
 }
 
 model Project {
-  id          Int           @id @default(autoincrement())
-  name        String
-  description String?
-  status      ProjectStatus @default(PLANNING)
-  createdBy   String        @map("created_by")
-  createdAt   DateTime      @default(now()) @map("created_at")
-  updatedAt   DateTime      @updatedAt @map("updated_at")
+  id             Int           @id @default(autoincrement())
+  name           String
+  description    String?
+  status         ProjectStatus @default(PLANNING)
+  createdBy      String        @map("created_by")
+  organizationId String        @map("organization_id")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
 
   // Current active model (one-to-one relationship)
   currentModelId String? @unique @map("current_model_id")
@@ -64,12 +86,14 @@ model Project {
   metadata Json? // Flexible project metadata
 
   // Relations
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   owner         User           @relation(fields: [createdBy], references: [id])
   currentModel  Model?         @relation("ProjectCurrentModel", fields: [currentModelId], references: [id])
   modelHistory  Model[]        @relation("ProjectModelHistory")
   groups        Group[]
   panels        Panel[]        // Panels in this project
   statuses      Status[]       // Custom statuses for this project
+  members       ProjectMember[] // Project members and roles
 
   @@map("projects")
 }
@@ -166,6 +190,23 @@ model Group {
 
   @@index([projectId])
   @@map("groups")
+}
+
+model ProjectMember {
+  id        String      @id @default(cuid())
+  projectId Int         @map("project_id")
+  userId    String      @map("user_id")
+  role      ProjectRole
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_members")
 }
 
 // Panel Management Models
@@ -314,9 +355,15 @@ model Notification {
 
 // Enums
 enum UserRole {
-  USER
-  ADMIN
+  VIEWER
   MANAGER
+  ADMIN
+}
+
+enum ProjectRole {
+  OWNER
+  MANAGER
+  VIEWER
 }
 
 enum ProjectStatus {

@@ -8,6 +8,7 @@ export interface AuthenticatedRequest extends Request {
     id: string;
     email: string;
     role: string;
+    organizationId?: string;
   };
 }
 
@@ -49,7 +50,7 @@ export async function authenticateToken(
     // Check if user still exists
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
-      select: { id: true, email: true, role: true }
+      select: { id: true, email: true, role: true, organizationId: true }
     });
 
     if (!user) {
@@ -61,7 +62,8 @@ export async function authenticateToken(
     req.user = {
       id: user.id,
       email: user.email,
-      role: user.role
+      role: user.role,
+      organizationId: user.organizationId
     };
 
     next();
@@ -140,14 +142,15 @@ export async function optionalAuth(
     const decoded = jwt.verify(token, jwtSecret) as JWTPayload;
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
-      select: { id: true, email: true, role: true }
+      select: { id: true, email: true, role: true, organizationId: true }
     });
 
     if (user) {
       req.user = {
         id: user.id,
         email: user.email,
-        role: user.role
+        role: user.role,
+        organizationId: user.organizationId
       };
     }
 
@@ -156,4 +159,117 @@ export async function optionalAuth(
     // Ignore auth errors for optional auth
     next();
   }
+}
+
+// Project-scoped RBAC helpers
+export const ProjectRoleOrder = {
+  VIEWER: 1,
+  MANAGER: 2,
+  OWNER: 3,
+} as const;
+
+export type ProjectRoleKey = keyof typeof ProjectRoleOrder;
+
+/**
+ * Resolve projectId from common locations on the request
+ */
+export function resolveProjectId(req: Request): number | null {
+  const candidates: unknown[] = [
+    // Typical REST patterns
+    (req.params as any)?.id,
+    (req.params as any)?.projectId,
+    // Query/body fallbacks
+    (req.query as any)?.projectId,
+    (req.body as any)?.projectId,
+  ];
+
+  for (const val of candidates) {
+    if (val === undefined || val === null) continue;
+    const n = typeof val === 'string' ? parseInt(val, 10) : Number(val);
+    if (!Number.isNaN(n) && Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/**
+ * Get the user's role within a project (OWNER/MANAGER/VIEWER) or null if not a member
+ */
+export async function getUserProjectRole(userId: string, projectId: number): Promise<ProjectRoleKey | null> {
+  const membership = await prisma.projectMember.findFirst({
+    where: { userId, projectId },
+    select: { role: true },
+  });
+
+  if (!membership) return null;
+  // Prisma enum comes back as uppercase string matching our keys
+  const role = membership.role as ProjectRoleKey;
+  return role;
+}
+
+/**
+ * Middleware: require at least the given project role for the target project
+ * Admins automatically have access to all projects in their organization
+ */
+export function requireProjectRole(minRole: ProjectRoleKey) {
+  return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+
+      const projectId = resolveProjectId(req);
+      if (projectId === null) {
+        res.status(400).json({ error: 'Project ID missing' });
+        return;
+      }
+
+      if (req.user.role === 'ADMIN' && req.user.organizationId) {
+        const project = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { organizationId: true }
+        });
+
+        if (!project) {
+          res.status(404).json({ error: 'Project not found' });
+          return;
+        }
+
+        if (project.organizationId === req.user.organizationId) {
+          next();
+          return;
+        }
+
+        res.status(403).json({ error: 'Cannot access projects from other organizations' });
+        return;
+      }
+
+      const userRole = await getUserProjectRole(req.user.id, projectId);
+      if (!userRole) {
+        res.status(403).json({ error: 'Not a member of this project' });
+        return;
+      }
+
+      if (ProjectRoleOrder[userRole] < ProjectRoleOrder[minRole]) {
+        res.status(403).json({
+          error: 'Insufficient project permissions',
+          required: minRole,
+          current: userRole,
+        });
+        return;
+      }
+
+      next();
+    } catch (error) {
+      logger.error('Authorization error in requireProjectRole:', error);
+      res.status(500).json({ error: 'Authorization check failed' });
+    }
+  };
+}
+
+/**
+ * Utility helper to compare two project roles
+ */
+export function isAtLeastRole(role: ProjectRoleKey, minRole: ProjectRoleKey): boolean {
+  return ProjectRoleOrder[role] >= ProjectRoleOrder[minRole];
 }

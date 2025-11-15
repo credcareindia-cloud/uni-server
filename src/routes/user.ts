@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import { prisma } from '../config/database.js';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 
@@ -8,7 +8,7 @@ const router = Router();
 router.use(authenticateToken);
 
 // Get user profile
-router.get('/profile', async (req: AuthenticatedRequest, res) => {
+router.get('/profile', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.user!.id;
 
@@ -48,9 +48,9 @@ router.get('/profile', async (req: AuthenticatedRequest, res) => {
 });
 
 // Update user profile
-router.put('/profile', async (req, res) => {
+router.put('/profile', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user!.id;
     const { name, phone, location, company, role: userRole } = req.body;
 
     // Build update data object
@@ -93,9 +93,9 @@ router.put('/profile', async (req, res) => {
 });
 
 // Get user statistics
-router.get('/stats', async (req, res) => {
+router.get('/stats', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user!.id;
 
     // Get project count
     const projectCount = await prisma.project.count({

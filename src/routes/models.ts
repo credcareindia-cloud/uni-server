@@ -6,6 +6,26 @@ import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
 import { logger } from '../utils/logger.js';
 
+/**
+ * Helper function to check if user has access to a project
+ */
+const checkProjectAccess = async (projectId: number, userId: string, userRole: string) => {
+  // ADMIN users have access to all projects in their organization
+  if (userRole === 'ADMIN') {
+    return true;
+  }
+  
+  // Check if user is a member of the project
+  const membership = await prisma.projectMember.findFirst({
+    where: {
+      projectId,
+      userId
+    }
+  });
+  
+  return !!membership;
+};
+
 const router = Router();
 
 // Validation schemas
@@ -37,13 +57,11 @@ router.get('/:id/metadata', authenticateToken, asyncHandler(async (req: Authenti
 
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
     select: {
       id: true,
+      projectId: true,
       elementCount: true,
       spatialStructure: true,
       originalFilename: true,
@@ -54,6 +72,12 @@ router.get('/:id/metadata', authenticateToken, asyncHandler(async (req: Authenti
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   res.json({
@@ -82,10 +106,7 @@ router.get('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedRequ
 
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
     include: {
       project: {
@@ -105,6 +126,12 @@ router.get('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedRequ
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   // Generate download URL if model is ready
@@ -170,6 +197,7 @@ router.get('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedRequ
 /**
  * GET /api/models/:id/download-url
  * Return a pre-signed URL for direct download from S3/CloudFront
+ * Allows viewers and managers of the project to download
  */
 router.get('/:id/download-url', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -181,15 +209,13 @@ router.get('/:id/download-url', authenticateToken, asyncHandler(async (req: Auth
   const rawExpires = Number((req.query?.expires as string) || 3600);
   const expiresIn = Math.min(Math.max(isNaN(rawExpires) ? 3600 : rawExpires, 60), 86400);
 
-  // Verify access and get storage key
+  // Get model and its project info
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
     select: {
+      projectId: true,
       status: true,
       storageKey: true,
       originalFilename: true
@@ -198,6 +224,12 @@ router.get('/:id/download-url', authenticateToken, asyncHandler(async (req: Auth
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   if (model.status !== 'READY') {
@@ -233,16 +265,19 @@ router.get('/:id/elements', authenticateToken, asyncHandler(async (req: Authenti
   // Verify model access
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
-    select: { id: true }
+    select: { id: true, projectId: true }
   });
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   // Build where clause
@@ -311,16 +346,19 @@ router.get('/:id/elements/:expressId', authenticateToken, asyncHandler(async (re
   // Verify model access
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
-    select: { id: true }
+    select: { id: true, projectId: true }
   });
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   const element = await prisma.modelElement.findUnique({
@@ -353,13 +391,11 @@ router.get('/:id/summary', authenticateToken, asyncHandler(async (req: Authentic
   // Verify model access
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
     select: {
       id: true,
+      projectId: true,
       status: true,
       processingProgress: true,
       elementCount: true,
@@ -369,6 +405,12 @@ router.get('/:id/summary', authenticateToken, asyncHandler(async (req: Authentic
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   // Get real-time counts
@@ -425,16 +467,19 @@ router.get('/:id/progress', authenticateToken, asyncHandler(async (req: Authenti
   // Verify model access
   const model = await prisma.model.findFirst({
     where: {
-      id,
-      project: {
-        createdBy: req.user.id
-      }
+      id
     },
-    select: { id: true, status: true, processingProgress: true }
+    select: { id: true, projectId: true, status: true, processingProgress: true }
   });
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check project access
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
   }
 
   // Set up SSE
@@ -507,6 +552,7 @@ router.get('/:id/progress', authenticateToken, asyncHandler(async (req: Authenti
 /**
  * DELETE /api/models/:id
  * Delete a model and its associated data
+ * Only project owners and managers can delete
  */
 router.delete('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -515,18 +561,41 @@ router.delete('/:id', authenticateToken, asyncHandler(async (req: AuthenticatedR
 
   const { id } = req.params;
 
-  // Verify model access
+  // Get model
   const model = await prisma.model.findFirst({
     where: {
-      id,
+      id
+    },
+    select: {
+      id: true,
+      projectId: true,
+      storageKey: true,
+      originalFilename: true,
       project: {
-        createdBy: req.user.id
+        select: {
+          createdBy: true
+        }
       }
     }
   });
 
   if (!model) {
     throw createApiError('Model not found', 404);
+  }
+
+  // Check delete permission (only ADMIN, project owner, or MANAGER can delete)
+  const isAdmin = req.user.role === 'ADMIN';
+  const isOwner = model.project.createdBy === req.user.id;
+  const isMember = await prisma.projectMember.findFirst({
+    where: {
+      projectId: model.projectId,
+      userId: req.user.id,
+      role: 'MANAGER'
+    }
+  });
+
+  if (!isAdmin && !isOwner && !isMember) {
+    throw createApiError('You do not have permission to delete this model', 403);
   }
 
   // Delete from storage

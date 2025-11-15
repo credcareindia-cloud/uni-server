@@ -252,6 +252,17 @@ async function run() {
       'Creating project and uploading model...'
     );
 
+    // Get user's organization before transaction
+    const user = await prisma.user.findUnique({
+      where: { id: data.uploadedByUserId }
+    });
+    
+    if (!user) {
+      throw new Error(`User not found: ${data.uploadedByUserId}`);
+    }
+
+    const organizationId = user.organizationId;
+
     // Single-file path: create the project now
     const result = await prisma.$transaction(async (tx) => {
       // Create the project first
@@ -259,7 +270,8 @@ async function run() {
         data: {
           name: data.projectData.name,
           description: data.projectData.description,
-          status: data.projectData.status as any,
+          status: 'ACTIVE',
+          organizationId,
           metadata: {
             createdFromModel: true,
             originalFilename: data.originalFilename,
@@ -324,6 +336,15 @@ async function run() {
       await tx.model.update({ 
         where: { id: model.id }, 
         data: { storageKey: finalStorageKey } 
+      });
+
+      // Add creator as project member (OWNER)
+      await tx.projectMember.create({
+        data: {
+          projectId: project.id,
+          userId: data.uploadedByUserId,
+          role: 'OWNER'
+        }
       });
 
       return { project: updatedProject, model: { ...model, storageKey: finalStorageKey } };

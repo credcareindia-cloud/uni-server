@@ -28,9 +28,11 @@ export function errorHandler(
 
   // Zod validation errors
   if (error instanceof ZodError) {
+    const firstError = error.errors[0];
+    const errorMessage = firstError?.message || 'Invalid request data';
     res.status(400).json({
       error: 'Validation Error',
-      message: 'Invalid request data',
+      message: errorMessage,
       details: error.errors.map(err => ({
         field: err.path.join('.'),
         message: err.message,

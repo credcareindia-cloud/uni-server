@@ -5,7 +5,7 @@ import { prisma } from '../config/database.js';
 import { storageService } from '../config/storage.js';
 import { logger } from '../utils/logger.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
-import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
+import { authenticateToken, AuthenticatedRequest, requireAdmin } from '../middleware/auth.js';
 import { enqueueIfcConversion } from '../queue/index.js';
 import { shouldRejectLargeFile, logSystemResources } from '../utils/systemMonitor.js';
 
@@ -28,7 +28,7 @@ const createProjectWithModelSchema = z.object({
  * - FRAG files: Processes directly and extracts metadata
  * This implements the model-first project creation workflow
  */
-router.post('/create-project-with-model', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/create-project-with-model', requireAdmin, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -114,6 +114,7 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
           name: projectData.projectName,
           description: projectData.projectDescription || `Project created from ${uploadedFile.name}`,
           status: projectData.projectStatus,
+          organizationId: req.user.organizationId,
           metadata: {
             createdFromModel: true,
             originalFilename: uploadedFile.name,
@@ -154,6 +155,15 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
       const finalKey = storageService.generateStorageKey(String(project.id), model.id, finalFragName);
       await tx.model.update({ where: { id: model.id }, data: { storageKey: finalKey } });
 
+      // Create owner membership for the creator (admin requester)
+      await tx.projectMember.create({
+        data: {
+          projectId: project.id,
+          userId: req.user!.id,
+          role: 'OWNER'
+        }
+      });
+
       return { project: updatedProject, model: { ...model, storageKey: finalKey } };
     });
 
@@ -174,7 +184,7 @@ router.post('/create-project-with-model', asyncHandler(async (req: Authenticated
     res.status(201).json({
       success: true,
       project: {
-        id: result.project.id,
+        id: String(result.project.id),
         name: result.project.name,
         description: result.project.description,
         status: result.project.status.toLowerCase().replace('_', '-'),

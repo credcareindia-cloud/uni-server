@@ -14,6 +14,10 @@ const registerSchema = z.object({
   email: z.string().email('Invalid email format'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   name: z.string().min(2, 'Name must be at least 2 characters'),
+  organizationName: z.preprocess(
+    (val) => (val === '' ? undefined : val),
+    z.string().min(2, 'Organization name must be at least 2 characters').optional()
+  ),
 });
 
 const loginSchema = z.object({
@@ -26,7 +30,7 @@ const loginSchema = z.object({
  * Register a new user
  */
 router.post('/register', asyncHandler(async (req: Request, res: Response) => {
-  const { email, password, name } = registerSchema.parse(req.body);
+  const { email, password, name, organizationName } = registerSchema.parse(req.body);
 
   // Check if user already exists
   const existingUser = await prisma.user.findUnique({
@@ -41,22 +45,57 @@ router.post('/register', asyncHandler(async (req: Request, res: Response) => {
   const saltRounds = 12;
   const passwordHash = await bcrypt.hash(password, saltRounds);
 
-  // Create user
-  const user = await prisma.user.create({
-    data: {
-      email,
-      passwordHash,
-      name,
-      role: 'USER' // Default role
-    },
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      role: true,
-      createdAt: true
-    }
+  // Create organization slug from name or email
+  const orgName = organizationName || `${name}'s Organization`;
+  const orgSlug = orgName.toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .trim('-') + '-' + Date.now();
+
+  // Create organization and user in a transaction
+  const result = await prisma.$transaction(async (tx) => {
+    // Create organization
+    const organization = await tx.organization.create({
+      data: {
+        name: orgName,
+        slug: orgSlug,
+        description: `Organization for ${name}`,
+      }
+    });
+
+    // Create user as admin of their organization
+    // createdBy is null because they're self-created during signup
+    const user = await tx.user.create({
+      data: {
+        email,
+        passwordHash,
+        name,
+        role: 'ADMIN',
+        organizationId: organization.id,
+        createdBy: null,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        organizationId: true,
+        createdAt: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          }
+        }
+      }
+    });
+
+    return { user, organization };
   });
+
+  const { user } = result;
 
   // Generate JWT token
   const jwtSecret = process.env.JWT_SECRET;
@@ -68,13 +107,14 @@ router.post('/register', asyncHandler(async (req: Request, res: Response) => {
     { 
       userId: user.id, 
       email: user.email, 
-      role: user.role 
+      role: user.role,
+      organizationId: user.organizationId
     },
     jwtSecret,
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
 
-  logger.info(`New user registered: ${email}`);
+  logger.info(`New user registered: ${email} for organization: ${result.organization.name}`);
 
   res.status(201).json({
     message: 'User registered successfully',
@@ -115,7 +155,8 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
     { 
       userId: user.id, 
       email: user.email, 
-      role: user.role 
+      role: user.role,
+      organizationId: user.organizationId
     },
     jwtSecret,
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }

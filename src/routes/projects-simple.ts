@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../config/database.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
-import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
+import { authenticateToken, AuthenticatedRequest, requireProjectRole } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = Router();
@@ -42,10 +42,22 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
   const { page = 1, limit = 10, status, search } = querySchema.parse(req.query);
   const skip = (page - 1) * limit;
 
-  // Build where clause
-  const where: any = {
-    createdBy: req.user.id
+  // Build where clause - all users see only projects in their organization
+  // Admins see all projects in their org, others see only their memberships within their org
+  const baseWhere: any = {
+    organizationId: req.user.organizationId // ALL queries must filter by organization
   };
+
+  const where: any = req.user.role === 'ADMIN' 
+    ? baseWhere // Admins see all projects in their organization
+    : {
+        ...baseWhere,
+        members: {
+          some: {
+            userId: req.user.id
+          }
+        }
+      };
 
   if (status) {
     where.status = status;
@@ -93,6 +105,10 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
             isActive: true,
             createdAt: true
           }
+        },
+        members: {
+          where: { userId: req.user.id },
+          select: { role: true }
         }
       }
     }),
@@ -101,7 +117,7 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
 
   // Transform response
   const transformedProjects = projects.map(project => ({
-    id: project.id,
+    id: String(project.id),
     name: project.name,
     description: project.description,
     status: project.status.toLowerCase().replace('_', '-'),
@@ -119,7 +135,8 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
       totalModels: project._count.modelHistory,
       totalGroups: project._count.groups,
       totalPanels: project._count.panels
-    }
+    },
+    userRole: (project.members as any)?.length > 0 ? (project.members as any)[0].role : undefined
   }));
 
   res.json({
@@ -137,7 +154,7 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
  * GET /api/projects/:id
  * Get a specific project by ID
  */
-router.get('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -149,10 +166,9 @@ router.get('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response)
     throw createApiError('Invalid project ID', 400);
   }
 
-  const project = await prisma.project.findFirst({
+  const project = await prisma.project.findUnique({
     where: {
-      id: projectId,
-      createdBy: req.user.id
+      id: projectId
     },
     include: {
       _count: {
@@ -210,7 +226,7 @@ router.get('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response)
 
   // Transform response
   const transformedProject = {
-    id: project.id,
+    id: String(project.id),
     name: project.name,
     description: project.description,
     status: project.status.toLowerCase().replace('_', '-'),
@@ -255,7 +271,7 @@ router.post('/', asyncHandler(async (req: any, res: Response) => {
  * PUT /api/projects/:id
  * Update a project
  */
-router.put('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -268,11 +284,10 @@ router.put('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response)
     throw createApiError('Invalid project ID', 400);
   }
 
-  // Check if project exists and user owns it
-  const existingProject = await prisma.project.findFirst({
+  // Check if project exists (authorization already handled by middleware)
+  const existingProject = await prisma.project.findUnique({
     where: {
-      id: projectId,
-      createdBy: req.user.id
+      id: projectId
     }
   });
 
@@ -325,7 +340,7 @@ router.put('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response)
  * GET /api/projects/:id/activities
  * Get recent activities for a project
  */
-router.get('/:id/activities', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/activities', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -337,18 +352,7 @@ router.get('/:id/activities', asyncHandler(async (req: AuthenticatedRequest, res
     throw createApiError('Invalid project ID', 400);
   }
 
-  // Check if project exists and user owns it
-  const project = await prisma.project.findFirst({
-    where: {
-      id: projectId,
-      createdBy: req.user.id
-    }
-  });
-
-  if (!project) {
-    throw createApiError('Project not found', 404);
-  }
-
+  // Authorization already handled by middleware
   // For now, return an empty array
   // TODO: Implement activity tracking in the future
   res.json([]);
@@ -358,7 +362,7 @@ router.get('/:id/activities', asyncHandler(async (req: AuthenticatedRequest, res
  * GET /api/projects/:id/panels
  * Get all panels for a project with optional model filtering
  */
-router.get('/:id/panels', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/panels', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -371,17 +375,7 @@ router.get('/:id/panels', asyncHandler(async (req: AuthenticatedRequest, res: Re
     throw createApiError('Invalid project ID', 400);
   }
 
-  // Check if project exists and user owns it
-  const project = await prisma.project.findFirst({
-    where: {
-      id: projectId,
-      createdBy: req.user.id
-    }
-  });
-
-  if (!project) {
-    throw createApiError('Project not found', 404);
-  }
+  // Authorization already handled by middleware
 
   // Build where clause for panel filtering
   const where: any = { projectId };
@@ -477,12 +471,13 @@ router.get('/:id/panels', asyncHandler(async (req: AuthenticatedRequest, res: Re
     updatedAt: panel.updatedAt,
     // Model information
     model: panel.model,
-    // Flattened group information
-    groups: panel.groups.map(pg => pg.group.name),
-    // Status information (use the first status if multiple, or derive from panel status)
+    // Group information (keep full object structure for modal)
+    groups: panel.groups,
+    // Status information (keep full object structure for modal)
+    statuses: panel.statuses,
     status: panel.statuses.length > 0 
       ? panel.statuses[0].status.name 
-      : 'READY_FOR_PRODUCTION', // Default status
+      : 'READY_FOR_PRODUCTION',
     // Additional display fields
     storey: panel.location || 'Unknown',
     description: panel.notes || `${panel.objectType || 'Panel'} - ${panel.name}`,
@@ -502,7 +497,7 @@ router.get('/:id/panels', asyncHandler(async (req: AuthenticatedRequest, res: Re
  * GET /api/projects/:id/models-list
  * Get all models for a project (for model selection dropdown)
  */
-router.get('/:id/models-list', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
@@ -514,11 +509,10 @@ router.get('/:id/models-list', asyncHandler(async (req: AuthenticatedRequest, re
     throw createApiError('Invalid project ID', 400);
   }
 
-  // Check if project exists and user owns it
-  const project = await prisma.project.findFirst({
+  // Authorization already handled by middleware
+  const project = await prisma.project.findUnique({
     where: {
-      id: projectId,
-      createdBy: req.user.id
+      id: projectId
     },
     include: {
       modelHistory: {
