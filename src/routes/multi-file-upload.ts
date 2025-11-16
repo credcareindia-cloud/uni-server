@@ -8,6 +8,7 @@ import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { enqueueIfcConversion } from '../queue/index.js';
 import { shouldRejectLargeFile, logSystemResources } from '../utils/systemMonitor.js';
+import { notificationService } from '../services/notificationService.js';
 
 const router = Router();
 
@@ -263,6 +264,13 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
     job.progress = 10;
     job.message = `Processing ${validatedFiles.length} files...`;
     multiFileJobs.set(jobId, job);
+
+    // Send processing started notification (fire and forget, don't await)
+    notificationService.projectNotifications.processingStarted(
+      job.projectBase.organizationId,
+      job.projectBase.name,
+      -1
+    ).catch(err => logger.error('Failed to create processingStarted notification:', err));
 
     // Real progress will come directly from IFC converter via environment variables
 
@@ -543,6 +551,14 @@ export function updateMultiFileStatus(
         job.projectId = String(project.id);
         job.projectData = { id: project.id, name: project.name };
         multiFileJobs.set(jobId, job);
+        
+        await notificationService.projectNotifications.createdSuccess(
+          job.projectBase.organizationId,
+          job.projectBase.name,
+          project.id,
+          createdModelIds.length
+        );
+        
         logger.info(`✅ Multi-file job ${jobId} created project ${project.id} with ${createdModelIds.length} models`);
         logger.info(`🔍 Job status updated to: ${job.status}, progress: ${job.progress}`);
       } catch (e: any) {
@@ -550,6 +566,13 @@ export function updateMultiFileStatus(
         job.message = 'Failed to finalize multi-file project';
         job.error = e?.message || 'Unknown error';
         multiFileJobs.set(jobId, job);
+        
+        await notificationService.projectNotifications.createdFailed(
+          job.projectBase.organizationId,
+          job.projectBase.name,
+          e?.message || 'Unknown error'
+        );
+        
         logger.error(`❌ Failed to finalize multi-file job ${jobId}:`, e);
       }
     })();
@@ -558,6 +581,12 @@ export function updateMultiFileStatus(
     job.status = 'failed';
     job.progress = Math.round((completedFiles / job.totalFiles) * 100);
     job.message = `${failedFiles} of ${job.totalFiles} files failed to process`;
+    
+    notificationService.projectNotifications.createdFailed(
+      job.projectBase.organizationId,
+      job.projectBase.name,
+      `${failedFiles} of ${job.totalFiles} files failed to process. ${completedFiles} file(s) completed successfully.`
+    ).catch(err => logger.error('Failed to create createdFailed notification:', err));
   } else if (processingFiles > 0) {
     // Still processing - calculate progress based on individual file progress
     let totalProgress = completedFiles * 100; // Completed files contribute 100% each

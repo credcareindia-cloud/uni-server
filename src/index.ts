@@ -37,16 +37,6 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(limiter);
-
 // CORS configuration (supports exact origins and wildcard via regex)
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:3001')
   .split(',')
@@ -79,6 +69,22 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
+
+// Rate limiting - skip health checks and upload endpoints
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5000, // limit each IP to 5000 requests per 15 minutes
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    return req.path === '/health' || 
+           req.path.startsWith('/api/upload') || 
+           req.path.includes('multi-file-upload') ||
+           req.path.includes('model-upload');
+  }
+});
+app.use(limiter);
 
 // Body parsing middleware
 app.use(compression());
@@ -152,12 +158,17 @@ process.on('SIGINT', () => {
 });
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`📊 Health check: http://localhost:${PORT}/health`);
+  logger.info(`📊 Health check: http://${process.env.CORS_ORIGIN}?:${PORT}/health`);
   logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   // Start background workers queue
   startModelProcessingQueue();
 });
+
+// Increase timeouts for large file uploads
+server.setTimeout(30 * 60 * 1000); // 30 minutes for socket timeout
+server.headersTimeout = 35 * 60 * 1000; // 35 minutes for headers timeout
+server.requestTimeout = 30 * 60 * 1000; // 30 minutes for request timeout
 
 export default app;

@@ -15,6 +15,14 @@ const querySchema = z.object({
   read: z.string().transform(val => val === 'true' ? true : val === 'false' ? false : undefined).optional(),
 });
 
+export const createNotificationSchema = z.object({
+  type: z.enum(['SYSTEM', 'PROJECT_UPDATE', 'MODEL_PROCESSED', 'GROUP_STATUS_CHANGE', 'USER_MENTION']),
+  title: z.string(),
+  message: z.string(),
+  recipientRole: z.enum(['ADMIN', 'MANAGER', 'BOTH', 'ALL', 'VIEWER']).optional().default('ADMIN'),
+  metadata: z.record(z.any()).optional(),
+});
+
 const markReadSchema = z.object({
   notificationIds: z.array(z.string().cuid()).optional(),
   markAll: z.boolean().optional(),
@@ -22,19 +30,24 @@ const markReadSchema = z.object({
 
 /**
  * GET /api/notifications
- * Get notifications for the authenticated user
+ * Get notifications for the authenticated user (organization-scoped)
  */
 router.get('/', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
 
+  if (!req.user.organizationId) {
+    throw createApiError('User organization not found', 400);
+  }
+
   const { page = 1, limit = 20, type, read } = querySchema.parse(req.query);
   const skip = (page - 1) * limit;
 
-  // Build where clause
+  // Build where clause - filter by organization and user
   const where: any = {
-    userId: req.user.id
+    userId: req.user.id,
+    organizationId: req.user.organizationId
   };
 
   if (type) {
@@ -66,6 +79,7 @@ router.get('/', authenticateToken, asyncHandler(async (req: AuthenticatedRequest
     prisma.notification.count({
       where: {
         userId: req.user.id,
+        organizationId: req.user.organizationId,
         read: false
       }
     })
@@ -80,7 +94,6 @@ router.get('/', authenticateToken, asyncHandler(async (req: AuthenticatedRequest
     read: notification.read,
     metadata: notification.metadata,
     createdAt: notification.createdAt,
-    // Add avatar based on type for frontend compatibility
     avatar: getNotificationAvatar(notification.type)
   }));
 
@@ -145,6 +158,39 @@ router.patch('/mark-read', authenticateToken, asyncHandler(async (req: Authentic
   res.json({
     message: `Marked ${updateCount} notifications as read`,
     count: updateCount
+  });
+}));
+
+/**
+ * PATCH /api/notifications/mark-unread
+ * Mark notifications as unread
+ */
+router.patch('/mark-unread', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { notificationIds } = markReadSchema.parse(req.body);
+
+  if (!notificationIds || notificationIds.length === 0) {
+    throw createApiError('notificationIds must be provided', 400);
+  }
+
+  const result = await prisma.notification.updateMany({
+    where: {
+      id: { in: notificationIds },
+      userId: req.user.id
+    },
+    data: {
+      read: false
+    }
+  });
+
+  logger.info(`Marked ${result.count} notifications as unread for user ${req.user.email}`);
+
+  res.json({
+    message: `Marked ${result.count} notifications as unread`,
+    count: result.count
   });
 }));
 
@@ -235,16 +281,21 @@ router.delete('/', authenticateToken, asyncHandler(async (req: AuthenticatedRequ
 
 /**
  * GET /api/notifications/unread-count
- * Get count of unread notifications
+ * Get count of unread notifications (organization-scoped)
  */
 router.get('/unread-count', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     throw createApiError('User not authenticated', 401);
   }
 
+  if (!req.user.organizationId) {
+    throw createApiError('User organization not found', 400);
+  }
+
   const unreadCount = await prisma.notification.count({
     where: {
       userId: req.user.id,
+      organizationId: req.user.organizationId,
       read: false
     }
   });
@@ -313,6 +364,69 @@ function getNotificationAvatar(type: string): string {
   };
 
   return avatarMap[type] || '/avatars/default.png';
+}
+
+/**
+ * Helper function to create notifications for multiple users based on role
+ * This is called internally by other services (e.g., project creation)
+ */
+export async function createNotificationsForRole(params: {
+  organizationId: string;
+  type: 'SYSTEM' | 'PROJECT_UPDATE' | 'MODEL_PROCESSED' | 'GROUP_STATUS_CHANGE' | 'USER_MENTION';
+  title: string;
+  message: string;
+  recipientRole: 'ADMIN' | 'MANAGER' | 'BOTH' | 'ALL' | 'VIEWER';
+  metadata?: Record<string, any>;
+  excludeUserId?: string; // Optionally exclude one user (e.g., the one who triggered it)
+}): Promise<string[]> {
+  const { organizationId, type, title, message, recipientRole, metadata, excludeUserId } = params;
+
+  // Determine which roles should receive the notification
+  let roleFilter: ('ADMIN' | 'MANAGER' | 'VIEWER')[] = [];
+  
+  if (recipientRole === 'ADMIN') {
+    roleFilter = ['ADMIN'];
+  } else if (recipientRole === 'MANAGER') {
+    roleFilter = ['MANAGER'];
+  } else if (recipientRole === 'BOTH') {
+    roleFilter = ['ADMIN', 'MANAGER'];
+  } else if (recipientRole === 'VIEWER') {
+    roleFilter = ['VIEWER'];
+  } else if (recipientRole === 'ALL') {
+    roleFilter = ['ADMIN', 'MANAGER', 'VIEWER'];
+  }
+
+  // Find all users in organization with the specified roles
+  const users = await prisma.user.findMany({
+    where: {
+      organizationId,
+      role: { in: roleFilter as any },
+      NOT: excludeUserId ? { id: excludeUserId } : undefined
+    },
+    select: { id: true }
+  });
+
+  // Create notifications for each user
+  const notificationIds = await Promise.all(
+    users.map(user =>
+      prisma.notification.create({
+        data: {
+          userId: user.id,
+          organizationId,
+          type: type as any,
+          title,
+          message,
+          read: false,
+          recipientRole: recipientRole as any,
+          metadata
+        }
+      }).then(n => n.id)
+    )
+  );
+
+  logger.info(`Created ${notificationIds.length} notifications for role ${recipientRole} in organization ${organizationId}`);
+  
+  return notificationIds;
 }
 
 export { router as notificationRoutes };

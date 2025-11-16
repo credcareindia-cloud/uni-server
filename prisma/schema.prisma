@@ -19,8 +19,9 @@ model Organization {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   // Relations
-  users    User[]
-  projects Project[]
+  users         User[]
+  projects      Project[]
+  notifications Notification[]
 
   @@map("organizations")
 }
@@ -339,12 +340,15 @@ model StatusHistory {
 }
 
 model Notification {
-  id      String           @id @default(cuid())
-  userId  String           @map("user_id")
-  type    NotificationType
-  title   String
-  message String
-  read    Boolean          @default(false)
+  id              String                 @id @default(cuid())
+  userId          String                 @map("user_id")
+  organizationId  String                 @map("organization_id")
+  type            NotificationType
+  title           String
+  message         String
+  read            Boolean                @default(false)
+  status          NotificationStatus     @default(PENDING) @map("status")
+  recipientRole   NotificationRole       @default(ADMIN) @map("recipient_role")
   
   // Optional metadata
   metadata Json? // Additional notification data
@@ -352,8 +356,11 @@ model Notification {
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId])
+  @@index([userId])
   @@map("notifications")
 }
 
@@ -409,4 +416,18 @@ enum NotificationType {
   MODEL_PROCESSED
   GROUP_STATUS_CHANGE
   USER_MENTION
+}
+
+enum NotificationRole {
+  ADMIN
+  MANAGER
+  VIEWER
+  BOTH
+  ALL
+}
+
+enum NotificationStatus {
+  PENDING
+  SUCCESS
+  FAILED
 }
