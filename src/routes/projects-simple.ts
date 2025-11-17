@@ -131,7 +131,7 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
     displayNumber: project.displayNumber,
     name: project.name,
     description: project.description,
-    status: project.status.toLowerCase().replace('_', '-'),
+    status: project.status,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     currentModel: project.currentModel ? {
@@ -241,7 +241,7 @@ router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: Authen
     displayNumber: project.displayNumber,
     name: project.name,
     description: project.description,
-    status: project.status.toLowerCase().replace('_', '-'),
+    status: project.status,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     currentModel: project.currentModel ? {
@@ -322,7 +322,7 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
     displayNumber: project.displayNumber,
     name: project.name,
     description: project.description,
-    status: project.status.toLowerCase().replace('_', '-'),
+    status: project.status,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     stats: {
@@ -335,6 +335,43 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
   res.json({
     message: 'Project updated successfully',
     project: transformedProject
+  });
+}));
+
+/**
+ * DELETE /api/projects/:id
+ * Delete a project (MANAGER+ role required)
+ */
+router.delete('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const projectId = await resolveProjectId(id);
+
+  if (!projectId) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { name: true }
+  });
+
+  if (!project) {
+    throw createApiError('Project not found', 404);
+  }
+
+  await prisma.project.delete({
+    where: { id: projectId }
+  });
+
+  logger.info(`Project deleted: ${project.name} by ${req.user.email}`);
+
+  res.json({
+    message: 'Project deleted successfully',
+    projectId: projectId
   });
 }));
 

@@ -100,7 +100,6 @@ export const projectNotifications = {
       message: `Project "${projectName}" is being processed. You'll be notified when it's ready.`,
       recipientRole: 'ADMIN',
       metadata: {
-        projectId,
         projectName,
       },
     });
