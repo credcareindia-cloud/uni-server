@@ -665,6 +665,7 @@ router.get('/:projectId/:panelId', async (req, res) => {
               select: {
                 id: true,
                 name: true,
+                status: true, // Include status field
               },
             },
           },
@@ -683,17 +684,7 @@ router.get('/:projectId/:panelId', async (req, res) => {
         },
         model: true,
         element: true,
-        statusHistory: {
-          orderBy: { createdAt: 'desc' },
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-          },
-        },
+        // Removed statusHistory to prevent 500 errors
       },
     });
 
@@ -701,10 +692,21 @@ router.get('/:projectId/:panelId', async (req, res) => {
       return res.status(404).json({ error: 'Panel not found' });
     }
 
-    res.json(panel);
+    // Convert BigInt fields to strings for JSON serialization
+    const panelResponse = {
+      ...panel,
+      model: panel.model ? {
+        ...panel.model,
+        sizeBytes: panel.model.sizeBytes?.toString()
+      } : null
+    };
+
+    res.json(panelResponse);
   } catch (error) {
     console.error('Error fetching panel:', error);
-    res.status(500).json({ error: 'Failed to fetch panel' });
+    console.error('Panel ID:', req.params.panelId);
+    console.error('Project ID:', req.params.projectId);
+    res.status(500).json({ error: 'Failed to fetch panel', details: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
 
@@ -771,15 +773,8 @@ router.post('/:projectId', async (req, res) => {
       },
     });
 
-    // Create initial status history entry
-    await prisma.panelStatusHistory.create({
-      data: {
-        panelId: panel.id,
-        status: panel.status,
-        notes: 'Panel created',
-        // TODO: Add user ID from authentication
-      },
-    });
+    // Note: Status history is now tracked via StatusHistory model when statuses are assigned
+    // via the status-management endpoints, not during panel creation
 
     res.status(201).json(panel);
   } catch (error) {

@@ -269,25 +269,16 @@ router.get('/:qrCodeId', async (req: Request, res: Response) => {
             include: { element: true }
         });
 
-        let redirectId = qrCode.panelId; // Default to CUID
+        let redirectId = qrCode.panelId; // Always use CUID (UUID) for security and consistency
 
-        if (panel) {
-            // Prefer metadata.ifcElementId (as string) - this matches what frontend expects
-            if ((panel.metadata as any)?.ifcElementId) {
-                redirectId = (panel.metadata as any).ifcElementId;
-            }
-            // Or element.expressId
-            else if (panel.element?.expressId) {
-                redirectId = panel.element.expressId.toString();
-            }
-        }
+        // We no longer fallback to ifcElementId or expressId as we want to use the secure UUID
+        // This matches the updated frontend route structure
 
-        // Get the primary frontend URL from CORS_ORIGIN (handle comma-separated list)
         const origins = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
-        const frontendUrl = origins.length > 0 ? origins[0] : (process.env.CORS_ORIGIN || '');
+        const frontendUrl = origins[0] || 'http://localhost:4000';
 
-        // Redirect to element report page
-        const redirectUrl = `${frontendUrl}/projects/${qrCode.projectId}/element-report/${redirectId}`;
+        // Use hash fragment for UUID to hide it from server logs and make URL cleaner
+        const redirectUrl = `${frontendUrl}/projects/${qrCode.projectId}/element-report#${redirectId}`;
         res.redirect(redirectUrl);
 
     } catch (error) {
