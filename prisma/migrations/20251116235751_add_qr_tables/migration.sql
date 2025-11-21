@@ -1,5 +1,7 @@
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 CREATE TABLE "qr_codes" (
-  "id"          TEXT      NOT NULL PRIMARY KEY DEFAULT cuid(),
+  "id"          TEXT      NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
   "panel_id"    TEXT      NOT NULL,
   "project_id"  INTEGER   NOT NULL,
   "is_active"   BOOLEAN   NOT NULL DEFAULT true,
@@ -14,7 +16,7 @@ CREATE INDEX "qr_codes_project_id_idx" ON "qr_codes" ("project_id");
 CREATE INDEX "qr_codes_is_active_idx" ON "qr_codes" ("is_active");
 
 CREATE TABLE "qr_scans" (
-  "id"          TEXT      NOT NULL PRIMARY KEY DEFAULT cuid(),
+  "id"          TEXT      NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
   "qr_code_id"  TEXT      NOT NULL,
   "scanned_at"  TIMESTAMP NOT NULL DEFAULT now(),
   "user_agent"  TEXT,
