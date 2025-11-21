@@ -22,6 +22,7 @@ import statusManagementRoutes from './routes/status-management.js';
 import groupManagementRoutes from './routes/group-management.js';
 import adminRoutes from './routes/admin.js';
 import userRoutes from './routes/user.js';
+import qrCodeRoutes from './routes/qr_routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { startModelProcessingQueue } from './queue/index.js';
@@ -80,10 +81,10 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    return req.path === '/health' || 
-           req.path.startsWith('/api/upload') || 
-           req.path.includes('multi-file-upload') ||
-           req.path.includes('model-upload');
+    return req.path === '/health' ||
+      req.path.startsWith('/api/upload') ||
+      req.path.includes('multi-file-upload') ||
+      req.path.includes('model-upload');
   }
 });
 app.use(limiter);
@@ -111,8 +112,8 @@ if (process.env.NODE_ENV !== 'test') {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     timestamp: new Date().toISOString(),
     version: process.env.npm_package_version || '1.0.0'
   });
@@ -130,6 +131,8 @@ app.use('/api/status-management', statusManagementRoutes);
 app.use('/api/group-management', groupManagementRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/qr-codes', qrCodeRoutes); // QR code API endpoints
+app.use('/qr', qrCodeRoutes); // Public QR redirect endpoint
 app.use('/api', modelFirstProjectRouter);
 app.use('/api', uploadProcessRouter);
 app.use('/api', multiFileUploadRouter);
@@ -138,7 +141,7 @@ app.use('/api', modelDownloadRouter);
 
 // 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     error: 'Not Found',
     message: `Route ${req.originalUrl} not found`,
     timestamp: new Date().toISOString()
@@ -162,6 +165,7 @@ process.on('SIGINT', () => {
 // Start server
 const server = app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
+  // Server restarted - QR fix applied (redirect ID)
   logger.info(`📊 Health check: http://${process.env.CORS_ORIGIN}?:${PORT}/health`);
   logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   // Start background workers queue

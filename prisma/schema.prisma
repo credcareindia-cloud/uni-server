@@ -364,6 +364,46 @@ model Notification {
   @@map("notifications")
 }
 
+// QR Code Management Models
+model QRCode {
+  id         String    @id @default(cuid())
+  panelId    String    @map("panel_id")
+  projectId  Int       @map("project_id")
+  
+  // QR Code lifecycle
+  isActive   Boolean   @default(true) @map("is_active")
+  expiresAt  DateTime? @map("expires_at") // Optional expiration
+  scanCount  Int       @default(0) @map("scan_count")
+  
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  scans QRScan[]
+
+  @@unique([panelId]) // One QR code per panel
+  @@index([projectId])
+  @@index([isActive])
+  @@map("qr_codes")
+}
+
+model QRScan {
+  id         String   @id @default(cuid())
+  qrCodeId   String   @map("qr_code_id")
+  
+  // Scan metadata
+  scannedAt  DateTime @default(now()) @map("scanned_at")
+  userAgent  String?  @map("user_agent")
+  ipAddress  String?  @map("ip_address")
+
+  // Relations
+  qrCode QRCode @relation(fields: [qrCodeId], references: [id], onDelete: Cascade)
+
+  @@index([qrCodeId])
+  @@index([scannedAt])
+  @@map("qr_scans")
+}
+
 // Enums
 enum UserRole {
   VIEWER

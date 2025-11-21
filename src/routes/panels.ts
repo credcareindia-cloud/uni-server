@@ -52,13 +52,13 @@ router.get('/:projectId/filters', async (req, res) => {
 
     // Extract unique values
     const groupsMap = new Map();
-    
+
     panels.forEach(p => {
       p.groups.forEach(pg => {
         groupsMap.set(pg.group.id, pg.group);
       });
     });
-    
+
     const groups = Array.from(groupsMap.values());
     const objectTypes = [...new Set(panels.map(p => p.objectType).filter(Boolean))];
     const locations = [...new Set(panels.map(p => p.location).filter(Boolean))];
@@ -160,11 +160,198 @@ router.get('/:projectId/all', async (req, res) => {
   }
 });
 
+// GET /api/panels/:projectId/hierarchy - Get model/storey hierarchy
+router.get('/:projectId/hierarchy', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    // Get all panels with just model and storey info to build hierarchy
+    // This is much lighter than fetching all panel data
+    const panels = await prisma.panel.findMany({
+      where: { projectId: parseInt(projectId) },
+      select: {
+        modelId: true,
+        metadata: true,
+        model: {
+          select: {
+            originalFilename: true
+          }
+        }
+      }
+    });
+
+    const hierarchyMap = new Map();
+
+    panels.forEach(p => {
+      const modelId = p.modelId || 'unknown';
+      const modelName = p.model?.originalFilename || 'Unknown Model';
+      const storeyName = (p.metadata as any)?.storeyName || 'Unknown Storey';
+
+      if (!hierarchyMap.has(modelId)) {
+        hierarchyMap.set(modelId, {
+          modelId,
+          modelName,
+          storeys: new Map()
+        });
+      }
+
+      const model = hierarchyMap.get(modelId);
+      if (!model.storeys.has(storeyName)) {
+        model.storeys.set(storeyName, {
+          name: storeyName,
+          elementCount: 0
+        });
+      }
+
+      model.storeys.get(storeyName).elementCount++;
+    });
+
+    // Convert to array structure
+    const hierarchy = Array.from(hierarchyMap.values()).map((m: any) => ({
+      modelId: m.modelId,
+      modelName: m.modelName,
+      storeys: Array.from(m.storeys.values()).sort((a: any, b: any) => a.name.localeCompare(b.name))
+    }));
+
+    res.json({ hierarchy });
+  } catch (error) {
+    console.error('Error fetching hierarchy:', error);
+    res.status(500).json({ error: 'Failed to fetch hierarchy' });
+  }
+});
+
+// GET /api/panels/:projectId/panel-location - Find panel location by localId (query param)
+router.get('/:projectId/panel-location', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { localId } = req.query;
+
+    if (!localId) {
+      return res.status(400).json({ error: 'localId query parameter is required' });
+    }
+
+    // Find panel by metadata.ifcElementId
+    // Note: metadata is a JSON field, so we need to query it carefully
+    // Prisma's JSON filtering capabilities depend on the DB, but for simple equality it works
+    const panel = await prisma.panel.findFirst({
+      where: {
+        projectId: parseInt(projectId),
+        metadata: {
+          path: ['ifcElementId'],
+          equals: localId.toString() // Store as string in JSON
+        }
+      },
+      select: {
+        id: true,
+        modelId: true,
+        metadata: true,
+        createdAt: true
+      }
+    });
+
+    if (!panel) {
+      return res.status(404).json({ error: 'Panel not found' });
+    }
+
+    const modelId = panel.modelId || 'unknown';
+    const storeyName = (panel.metadata as any)?.storeyName || 'Unknown Storey';
+
+    // Calculate page number
+    const countBefore = await prisma.panel.count({
+      where: {
+        projectId: parseInt(projectId),
+        modelId: modelId === 'unknown' ? null : modelId,
+        metadata: {
+          path: ['storeyName'],
+          equals: storeyName
+        },
+        OR: [
+          { createdAt: { gt: panel.createdAt } },
+          {
+            createdAt: panel.createdAt,
+            id: { lt: panel.id }
+          }
+        ]
+      }
+    });
+
+    const limit = 50;
+    const page = Math.floor(countBefore / limit) + 1;
+
+    res.json({
+      panelId: panel.id,
+      modelId,
+      storey: storeyName,
+      page
+    });
+
+  } catch (error) {
+    console.error('Error fetching panel location by localId:', error);
+    res.status(500).json({ error: 'Failed to fetch panel location' });
+  }
+});
+
+// GET /api/panels/:projectId/panel-location/:panelId - Find panel location in tree
+router.get('/:projectId/panel-location/:panelId', async (req, res) => {
+  try {
+    const { projectId, panelId } = req.params;
+
+    const panel = await prisma.panel.findFirst({
+      where: {
+        id: panelId,
+        projectId: parseInt(projectId)
+      },
+      select: {
+        id: true,
+        modelId: true,
+        metadata: true
+      }
+    });
+
+    if (!panel) {
+      return res.status(404).json({ error: 'Panel not found' });
+    }
+
+    const modelId = panel.modelId || 'unknown';
+    const storeyName = (panel.metadata as any)?.storeyName || 'Unknown Storey';
+
+    // Calculate page number (approximate)
+    // We need to know how many panels are before this one in the same storey
+    // assuming default sort order (createdAt desc)
+    const countBefore = await prisma.panel.count({
+      where: {
+        projectId: parseInt(projectId),
+        modelId: modelId === 'unknown' ? null : modelId,
+        metadata: {
+          path: ['storeyName'],
+          equals: storeyName
+        },
+        createdAt: {
+          gt: (await prisma.panel.findUnique({ where: { id: panelId }, select: { createdAt: true } }))?.createdAt
+        }
+      }
+    });
+
+    const limit = 50; // Default limit
+    const page = Math.floor(countBefore / limit) + 1;
+
+    res.json({
+      modelId,
+      storey: storeyName,
+      page
+    });
+
+  } catch (error) {
+    console.error('Error fetching panel location:', error);
+    res.status(500).json({ error: 'Failed to fetch panel location' });
+  }
+});
+
 // GET /api/panels/:projectId - Get all panels for a project with pagination
 router.get('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
-    const { status, groupId, customStatusId, search, page = '1', limit = '50' } = req.query;
+    const { status, groupId, customStatusId, search, page = '1', limit = '50', modelId, storey } = req.query;
 
     const pageNum = parseInt(page as string);
     const limitNum = Math.min(parseInt(limit as string), 100); // Max 100 per page
@@ -173,6 +360,19 @@ router.get('/:projectId', async (req, res) => {
     const where: any = {
       projectId: parseInt(projectId),
     };
+
+    // Filter by Model ID
+    if (modelId) {
+      where.modelId = modelId as string;
+    }
+
+    // Filter by Storey (in metadata)
+    if (storey) {
+      where.metadata = {
+        path: ['storeyName'],
+        equals: storey as string
+      };
+    }
 
     // Filter by status ID (many-to-many relationship)
     if (status) {
@@ -205,13 +405,18 @@ router.get('/:projectId', async (req, res) => {
       where.OR = [
         { name: { contains: search as string, mode: 'insensitive' } },
         { tag: { contains: search as string, mode: 'insensitive' } },
-        { location: { contains: search as string, mode: 'insensitive' } },
+        { objectType: { contains: search as string, mode: 'insensitive' } },
+        {
+          element: {
+            ifcType: { contains: search as string, mode: 'insensitive' }
+          }
+        }
       ];
     }
 
     // Get total count for pagination (database count)
     const totalCount = await prisma.panel.count({ where });
-    
+
     // Get total panels from model metadata (actual FRAG file count)
     let totalPanelsFromMetadata = totalCount;
     try {
@@ -223,7 +428,7 @@ router.get('/:projectId', async (req, res) => {
           }
         }
       });
-      
+
       if (project?.currentModel?.spatialStructure) {
         // Prisma automatically parses JSON fields, no need to JSON.parse()
         const spatialData = project.currentModel.spatialStructure as any;
@@ -305,7 +510,10 @@ router.get('/:projectId', async (req, res) => {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [
+        { createdAt: 'desc' },
+        { id: 'asc' }
+      ],
       skip,
       take: limitNum,
     });
