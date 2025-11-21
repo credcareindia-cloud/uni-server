@@ -14,7 +14,8 @@ RUN apk add --no-cache \
     jpeg-dev \
     pango-dev \
     giflib-dev \
-    pixman-dev
+    pixman-dev \
+    postgresql-client
 
 WORKDIR /app
 
@@ -38,8 +39,8 @@ RUN npm run build:quiet
 # Expose API port
 EXPOSE 4000
 
-# Create startup script to run migrations then start server
-RUN printf '#!/bin/sh\necho "Running database migrations..."\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
+# Create startup script to clean up failed migrations, then run migrations and start server
+RUN printf '#!/bin/sh\necho "Running database migrations..."\n# Clean up the failed migration entry if it exists\npsql "$DATABASE_URL" -c "DELETE FROM _prisma_migrations WHERE migration_name = '\''20251116235751_add_qr_tables'\'' AND success = false;" 2>/dev/null || true\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
 
 # Default command
 CMD ["/app/start.sh"]
