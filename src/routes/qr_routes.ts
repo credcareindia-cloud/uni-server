@@ -282,8 +282,12 @@ router.get('/:qrCodeId', async (req: Request, res: Response) => {
             }
         }
 
+        // Get the primary frontend URL from CORS_ORIGIN (handle comma-separated list)
+        const origins = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
+        const frontendUrl = origins.length > 0 ? origins[0] : (process.env.CORS_ORIGIN || '');
+
         // Redirect to element report page
-        const redirectUrl = `${process.env.CORS_ORIGIN}/projects/${qrCode.projectId}/element-report/${redirectId}`;
+        const redirectUrl = `${frontendUrl}/projects/${qrCode.projectId}/element-report/${redirectId}`;
         res.redirect(redirectUrl);
 
     } catch (error) {
