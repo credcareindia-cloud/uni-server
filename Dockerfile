@@ -40,7 +40,7 @@ RUN npm run build:quiet
 EXPOSE 4000
 
 # Create startup script to clean up failed migrations, then run migrations and start server
-RUN printf '#!/bin/sh\necho "Running database migrations..."\n# Clean up the failed migration entry if it exists\npsql "$DATABASE_URL" -c "DELETE FROM _prisma_migrations WHERE migration_name = '\''20251116235751_add_qr_tables'\'' AND success = false;" 2>/dev/null || true\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
+RUN printf '#!/bin/sh\necho "Running database migrations..."\necho "Checking for failed migrations..."\n# Try to mark the failed migration as rolled back so Prisma can proceed\nnpx prisma migrate resolve --rolled-back "20251116235751_add_qr_tables" 2>/dev/null || echo "Migration already resolved or not found"\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
 
 # Default command
 CMD ["/app/start.sh"]
