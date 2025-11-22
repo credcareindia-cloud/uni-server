@@ -436,6 +436,7 @@ router.delete('/:statusId', async (req, res) => {
 router.get('/history/:panelId', async (req, res) => {
   try {
     const { panelId } = req.params;
+    const userId = (req as any).user?.id;
 
     const history = await prisma.statusHistory.findMany({
       where: { panelId: panelId },
@@ -491,10 +492,74 @@ router.get('/history/:panelId', async (req, res) => {
       });
     }
 
-    res.json({ history: historyWithStatus, allStatuses });
+    // Calculate unread count based on UserPanelView
+    let unreadCount = 0;
+    if (userId) {
+      const userPanelView = await prisma.userPanelView.findUnique({
+        where: {
+          userId_panelId: {
+            userId: userId,
+            panelId: panelId
+          }
+        }
+      });
+
+      const totalCount = history.length;
+      const lastViewedCount = userPanelView?.lastViewedCount || 0;
+      unreadCount = Math.max(0, totalCount - lastViewedCount);
+
+      console.log(`🔔 Backend Badge Calc: User ${userId}, Panel ${panelId}`);
+      console.log(`🔔 Total: ${totalCount}, LastViewed: ${lastViewedCount}, Unread: ${unreadCount}`);
+    } else {
+      console.log('🔔 Backend Badge Calc: No User ID found in request');
+    }
+
+    res.json({ history: historyWithStatus, allStatuses, unreadCount });
   } catch (error) {
     console.error('Error fetching status history:', error);
     res.status(500).json({ error: 'Failed to fetch status history' });
+  }
+});
+
+// Mark panel submissions as viewed (update UserPanelView)
+router.post('/history/:panelId/mark-viewed', async (req, res) => {
+  try {
+    const { panelId } = req.params;
+    const userId = (req as any).user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    // Get current history count
+    const historyCount = await prisma.statusHistory.count({
+      where: { panelId: panelId }
+    });
+
+    // Upsert UserPanelView record
+    await prisma.userPanelView.upsert({
+      where: {
+        userId_panelId: {
+          userId: userId,
+          panelId: panelId
+        }
+      },
+      update: {
+        lastViewedCount: historyCount,
+        lastViewedAt: new Date()
+      },
+      create: {
+        userId: userId,
+        panelId: panelId,
+        lastViewedCount: historyCount,
+        lastViewedAt: new Date()
+      }
+    });
+
+    res.json({ success: true, viewedCount: historyCount });
+  } catch (error) {
+    console.error('Error marking submissions as viewed:', error);
+    res.status(500).json({ error: 'Failed to mark submissions as viewed' });
   }
 });
 

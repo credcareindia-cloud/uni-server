@@ -29,6 +29,11 @@ export async function authenticateToken(
   next: NextFunction
 ): Promise<void> {
   try {
+    // Skip auth for OPTIONS requests (preflight)
+    if (req.method === 'OPTIONS') {
+      return next();
+    }
+
     const authHeader = req.headers.authorization;
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
@@ -46,7 +51,7 @@ export async function authenticateToken(
 
     // Verify JWT token
     const decoded = jwt.verify(token, jwtSecret) as JWTPayload;
-    
+
     // Check if user still exists
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
@@ -69,11 +74,13 @@ export async function authenticateToken(
     next();
   } catch (error) {
     if (error instanceof jwt.JsonWebTokenError) {
+      logger.warn(`Auth failed: Invalid token - ${error.message}`);
       res.status(401).json({ error: 'Invalid token' });
       return;
     }
-    
+
     if (error instanceof jwt.TokenExpiredError) {
+      logger.warn('Auth failed: Token expired');
       res.status(401).json({ error: 'Token expired' });
       return;
     }
@@ -94,7 +101,7 @@ export function requireRole(roles: string[]) {
     }
 
     if (!roles.includes(req.user.role)) {
-      res.status(403).json({ 
+      res.status(403).json({
         error: 'Insufficient permissions',
         required: roles,
         current: req.user.role

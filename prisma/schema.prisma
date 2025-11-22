@@ -54,6 +54,7 @@ model User {
   panelStatusAssignments PanelStatus[]
   panelGroupAssignments  PanelGroup[]
   projectMemberships     ProjectMember[]
+  panelViews             UserPanelView[]
 
   @@map("users")
 }
@@ -402,6 +403,26 @@ model QRScan {
   @@index([qrCodeId])
   @@index([scannedAt])
   @@map("qr_scans")
+}
+
+// Track which submissions each user has viewed for notification badges
+model UserPanelView {
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  panelId           String   @map("panel_id")
+  lastViewedAt      DateTime @default(now()) @map("last_viewed_at")
+  lastViewedCount   Int      @default(0) @map("last_viewed_count") // Number of submissions at last view
+  
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, panelId])
+  @@index([userId])
+  @@index([panelId])
+  @@map("user_panel_views")
 }
 
 // Enums

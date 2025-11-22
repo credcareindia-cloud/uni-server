@@ -165,7 +165,6 @@ process.on('SIGINT', () => {
 // Start server
 const server = app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
-  // Server restarted - QR fix applied (redirect ID)
   logger.info(`📊 Health check: http://${process.env.CORS_ORIGIN}?:${PORT}/health`);
   logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   // Start background workers queue
