@@ -77,6 +77,40 @@ router.get('/:projectId/filters', async (req, res) => {
   }
 });
 
+// GET /api/panels/:projectId/filter-data - Get minimal panel data for IFC type filtering
+// Returns only essential fields needed for filtering: id, elementId, ifcType, metadata.ifcElementId
+router.get('/:projectId/filter-data', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    const panels = await prisma.panel.findMany({
+      where: { projectId: parseInt(projectId) },
+      select: {
+        id: true,
+        elementId: true,
+        metadata: true, // Contains ifcElementId
+        element: {
+          select: {
+            id: true,
+            ifcType: true,
+            globalId: true,
+          }
+        }
+      }
+    });
+
+    console.log(`✅ Fetched ${panels.length} panels (filter data only) for project ${projectId}`);
+
+    res.json({
+      panels,
+      total: panels.length,
+    });
+  } catch (error) {
+    console.error('Error fetching panel filter data:', error);
+    res.status(500).json({ error: 'Failed to fetch panel filter data' });
+  }
+});
+
 // GET /api/panels/:projectId/all - Get ALL panels for a project (no pagination)
 router.get('/:projectId/all', async (req, res) => {
   try {

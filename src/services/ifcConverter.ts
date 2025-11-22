@@ -15,7 +15,7 @@ export class IfcConverterService {
       absolute: true,
       path: 'file://' + process.cwd() + '/node_modules/web-ifc/'
     };
-    
+
     logger.info('✅ IFC Converter Service initialized');
     logger.info(`📦 WASM path: ${process.cwd()}/node_modules/web-ifc/`);
   }
@@ -33,46 +33,81 @@ export class IfcConverterService {
   }> {
     try {
       logger.info(`📊 Extracting metadata from IFC file (${ifcBuffer.length} bytes)...`);
-      
+
       const WebIFC = await import('web-ifc');
       const ifcApi = new WebIFC.IfcAPI();
-      
+
       // Initialize WASM
       await ifcApi.Init();
-      
+
       // Load IFC file
       const ifcBytes = new Uint8Array(ifcBuffer);
       const modelID = ifcApi.OpenModel(ifcBytes);
-      
+
       logger.info(`✅ IFC file loaded, model ID: ${modelID}`);
-      
+
       // Extract spatial structure
       const storeys: Array<{ name: string; elementCount: number; elements: Array<{ id: string; name: string; type: string; material: string }> }> = [];
       const elementTypes: Record<string, number> = {};
       let totalElements = 0;
-      
+
       // Common IFC element types to count
       const elementTypeIds = [
+        // Structural elements
         WebIFC.IFCWALL,
         WebIFC.IFCWALLSTANDARDCASE,
         WebIFC.IFCSLAB,
         WebIFC.IFCBEAM,
         WebIFC.IFCCOLUMN,
+        WebIFC.IFCMEMBER, // Structural members / frames
+        WebIFC.IFCPLATE,
+        WebIFC.IFCFOOTING,
+        WebIFC.IFCPILE,
+
+        // Doors and windows
         WebIFC.IFCDOOR,
         WebIFC.IFCWINDOW,
+
+        // Building elements
         WebIFC.IFCROOF,
         WebIFC.IFCSTAIR,
         WebIFC.IFCRAILING,
-        WebIFC.IFCFURNISHINGELEMENT,
-        WebIFC.IFCMEMBER,
-        WebIFC.IFCPLATE,
         WebIFC.IFCCURTAINWALL,
-        WebIFC.IFCFOOTING,
-        WebIFC.IFCPILE,
         WebIFC.IFCRAMP,
-        WebIFC.IFCSPACE
+        WebIFC.IFCSPACE,
+        WebIFC.IFCFURNISHINGELEMENT,
+
+        // MEP - Distribution elements
+        WebIFC.IFCDUCTFITTING,
+        WebIFC.IFCDUCTSEGMENT,
+        WebIFC.IFCPIPEFITTING,
+        WebIFC.IFCPIPESEGMENT,
+        WebIFC.IFCFLOWSEGMENT,
+
+        // MEP - Flow control and terminals
+        WebIFC.IFCFLOWCONTROLLER,
+        WebIFC.IFCFLOWTERMINAL,
+        WebIFC.IFCVALVE,
+        WebIFC.IFCDAMPER,
+        WebIFC.IFCAIRTERMINAL,
+
+        // MEP - Electrical elements
+        WebIFC.IFCCABLECARRIERFITTING,
+        WebIFC.IFCCABLECARRIERSEGMENT,
+        WebIFC.IFCCABLESEGMENT,
+        WebIFC.IFCELECTRICALELEMENT,
+        WebIFC.IFCELECTRICDISTRIBUTIONBOARD,
+        WebIFC.IFCLIGHTFIXTURE,
+
+        // MEP - HVAC equipment
+        WebIFC.IFCFAN,
+        WebIFC.IFCPUMP,
+        WebIFC.IFCBOILER,
+        WebIFC.IFCCHILLER,
+        WebIFC.IFCCOIL,
+        WebIFC.IFCHEATEXCHANGER
       ];
-      
+
       // Count all elements by type
       for (const typeId of elementTypeIds) {
         try {
@@ -88,20 +123,20 @@ export class IfcConverterService {
           // Skip if type not found
         }
       }
-      
+
       // Get all building storeys
       const storeyIds = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCBUILDINGSTOREY);
       logger.info(`📦 Found ${storeyIds.size()} storeys`);
-      
+
       for (let i = 0; i < storeyIds.size(); i++) {
         const storeyId = storeyIds.get(i);
         const storey = ifcApi.GetLine(modelID, storeyId);
         const storeyName = storey.Name?.value || storey.LongName?.value || `Storey ${i + 1}`;
-        
+
         // Get elements in this storey using spatial containment
         let elementCount = 0;
         const storeyElements: Array<{ id: string; name: string; type: string; material: string }> = [];
-        
+
         try {
           const relContained = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE);
           for (let j = 0; j < relContained.size(); j++) {
@@ -109,7 +144,7 @@ export class IfcConverterService {
             const rel = ifcApi.GetLine(modelID, relId);
             if (rel.RelatingStructure?.value === storeyId && rel.RelatedElements) {
               elementCount = rel.RelatedElements.length;
-              
+
               // Extract individual elements (panels)
               for (const elementRef of rel.RelatedElements) {
                 try {
@@ -117,7 +152,7 @@ export class IfcConverterService {
                   const element = ifcApi.GetLine(modelID, elementId);
                   const elementType = ifcApi.GetNameFromTypeCode(element.type);
                   const elementName = element.Name?.value || element.Tag?.value || `${elementType}-${elementId}`;
-                  
+
                   // Extract material information
                   let material = 'N/A';
                   try {
@@ -142,7 +177,7 @@ export class IfcConverterService {
                   } catch (matErr) {
                     // Material extraction failed, keep N/A
                   }
-                  
+
                   storeyElements.push({
                     id: `${elementId}`,
                     name: elementName,
@@ -159,28 +194,28 @@ export class IfcConverterService {
         } catch (err) {
           logger.warn(`⚠️  Could not extract elements for storey: ${storeyName}`);
         }
-        
+
         storeys.push({
           name: storeyName,
           elementCount,
           elements: storeyElements
         });
-        
+
         logger.info(`📦 Storey: ${storeyName} (${elementCount} elements, ${storeyElements.length} panels extracted)`);
       }
-      
+
       logger.info(`📊 Total elements: ${totalElements}, Element types: ${Object.keys(elementTypes).length}, Storeys: ${storeys.length}`);
-      
+
       // Close model
       ifcApi.CloseModel(modelID);
-      
+
       return {
         totalElements,
         storeys,
         elementTypes,
         spatialStructure: { storeys }
       };
-      
+
     } catch (error: any) {
       logger.error('❌ IFC metadata extraction failed:', error);
       return {
@@ -213,28 +248,28 @@ export class IfcConverterService {
     try {
       const fileSizeMB = (ifcBuffer.length / 1024 / 1024).toFixed(2);
       logger.info(`🔄 Starting IFC → Fragments conversion (${fileSizeMB} MB)`);
-      
+
       // Log memory before conversion
       const memBefore = process.memoryUsage();
       logger.info(`💾 Memory before conversion: ${(memBefore.heapUsed / 1024 / 1024).toFixed(2)} MB used / ${(memBefore.heapTotal / 1024 / 1024).toFixed(2)} MB total`);
-      
+
       // STEP 1: Extract metadata from IFC BEFORE conversion
       logger.info('📊 Step 1: Extracting metadata from IFC file...');
       const metadata = await this.extractIfcMetadata(ifcBuffer);
       logger.info(`✅ Metadata extracted: ${metadata.totalElements} elements, ${metadata.storeys.length} storeys`);
-      
+
       // Force garbage collection if available (run with --expose-gc flag)
       if (global.gc) {
         logger.info('🗑️ Running garbage collection before conversion...');
         global.gc();
       }
-      
+
       // STEP 2: Convert IFC to Fragments
       logger.info('🔧 Step 2: Converting IFC to Fragments...');
       logger.warn('⚠️ Large file conversion may take several minutes and use significant memory');
-      
+
       const ifcBytes = new Uint8Array(ifcBuffer);
-      
+
       // Progress tracking
       let lastProgress = 0;
       const progressCallback = (progress: number, data: any) => {
@@ -271,11 +306,11 @@ export class IfcConverterService {
     } catch (error: any) {
       logger.error('❌ IFC conversion failed:', error);
       logger.error(`Error details: ${error.stack}`);
-      
+
       // Log memory on error
       const memError = process.memoryUsage();
       logger.error(`💾 Memory at error: ${(memError.heapUsed / 1024 / 1024).toFixed(2)} MB used / ${(memError.heapTotal / 1024 / 1024).toFixed(2)} MB total`);
-      
+
       throw new Error(`IFC conversion failed: ${error.message}`);
     }
   }
@@ -293,7 +328,7 @@ export class IfcConverterService {
       // Access the spatial structure from the serializer (if available)
       // Note: IfcImporter may not expose these properties directly in all versions
       const spatialStructure = (this.serializer as any).spatialStructure || {};
-      
+
       // Extract storeys
       const storeys: Array<{ name: string; elementCount: number }> = [];
       const elementTypes: Record<string, number> = {};
@@ -312,7 +347,7 @@ export class IfcConverterService {
         if (isStorey) {
           const storeyName = node.name || `Storey ${storeys.length + 1}`;
           const elementCount = node.children?.length || 0;
-          
+
           storeys.push({
             name: storeyName,
             elementCount
@@ -342,13 +377,13 @@ export class IfcConverterService {
       // If no elements found, try alternative extraction
       if (totalElements === 0) {
         logger.warn('⚠️  No elements found in spatial structure, using alternative extraction');
-        
+
         // Try to get items from serializer (if available)
         const serializerAny = this.serializer as any;
         if (serializerAny.items) {
           const items = Array.from(serializerAny.items.values());
           totalElements = items.length;
-          
+
           items.forEach((item: any) => {
             const type = item.type || 'Unknown';
             elementTypes[type] = (elementTypes[type] || 0) + 1;
@@ -365,7 +400,7 @@ export class IfcConverterService {
 
     } catch (error: any) {
       logger.error('❌ Metadata extraction failed:', error);
-      
+
       // Return minimal metadata on error
       return {
         totalElements: 0,
@@ -397,11 +432,11 @@ export class IfcConverterService {
     fileSize: number;
   }> {
     const header = ifcBuffer.toString('utf8', 0, 1000);
-    
+
     // Extract IFC version
     const versionMatch = header.match(/FILE_SCHEMA\s*\(\s*\('([^']+)'\)/);
     const version = versionMatch ? versionMatch[1] : 'Unknown';
-    
+
     return {
       version,
       schema: version,

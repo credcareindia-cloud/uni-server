@@ -84,7 +84,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
 
   // Extract all uploaded files (support multiple file fields)
   const uploadedFiles: UploadedFile[] = [];
-  
+
   if (Array.isArray(files)) {
     uploadedFiles.push(...files);
   } else {
@@ -116,7 +116,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
     const fileName = uploadedFile.name.toLowerCase();
     const isIfc = fileName.endsWith('.ifc');
     const isFrag = fileName.endsWith('.frag');
-    
+
     if (!isIfc && !isFrag) {
       throw createApiError(`Invalid file type: ${uploadedFile.name}. Only .ifc or .frag files are allowed`, 400);
     }
@@ -134,7 +134,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
 
     // Auto-detect category from filename
     const category = detectFileCategory(uploadedFile.name);
-    
+
     validatedFiles.push({
       file: uploadedFile,
       tempPath: tempFilePath,
@@ -148,7 +148,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
   // Check total file size limits
   const isProduction = process.env.NODE_ENV === 'production';
   const MAX_TOTAL_SIZE_MB = isProduction ? 10240 : 2048; // 10GB in production, 2GB in dev
-  
+
   if (totalSizeMB > MAX_TOTAL_SIZE_MB) {
     throw createApiError(`Total file size too large: ${totalSizeMB.toFixed(1)}MB. Maximum allowed: ${MAX_TOTAL_SIZE_MB}MB`, 413);
   }
@@ -174,7 +174,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
   try {
     // Generate unique job ID
     const jobId = `multi_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    
+
     // Create multi-file processing job
     const job: MultiFileProcessingJob = {
       id: jobId,
@@ -206,7 +206,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
     for (let i = 0; i < validatedFiles.length; i++) {
       const validatedFile = validatedFiles[i];
       const fileJob = job.files[i];
-      
+
       // Generate processing ID for this file
       const processingId = `proc_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`;
       fileJob.processingId = processingId;
@@ -217,11 +217,11 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
       const baseFragName = validatedFile.isIfc
         ? `${baseName}.frag`
         : validatedFile.file.name;
-      
+
       // Check if this filename already exists in this job
       const existingFiles = job.files.slice(0, i).filter(f => f.finalFragName);
       const existingNames = existingFiles.map(f => f.finalFragName);
-      
+
       let finalFragName = baseFragName;
       let counter = 1;
       while (existingNames.includes(finalFragName)) {
@@ -229,7 +229,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
         finalFragName = `${nameWithoutExt} ${counter}.frag`;
         counter++;
       }
-      
+
       // Store the finalFragName in the job for future duplicate checking
       fileJob.finalFragName = finalFragName;
 
@@ -297,7 +297,7 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
         logger.warn(`⚠️ Failed to cleanup temp file ${vf.tempPath}: ${cleanupError}`);
       }
     }
-    
+
     logger.error('Error starting multi-file processing:', error);
     throw createApiError('Failed to start multi-file processing', 500);
   }
@@ -405,7 +405,7 @@ export function updateMultiFileStatus(
   const processingFiles = job.files.filter(f => f.status === 'processing').length;
 
   job.completedFiles = completedFiles;
-  
+
   // Update overall job status
   if (completedFiles === job.totalFiles) {
     // All files completed successfully -> Create unified project and attach models
@@ -497,16 +497,60 @@ export function updateMultiFileStatus(
           // Create panels if metadata present and calculate element count
           const meta: any = f.metadata;
           let elementCount = 0;
-          
+
           if (meta && Array.isArray(meta.storeys)) {
-            const panels: any[] = [];
+            // First, create all ModelElement records with IFC types
+            const elementsToCreate: any[] = [];
+            const panelsToCreate: any[] = [];
+
             for (const storey of meta.storeys) {
               if (storey.elements && storey.elements.length) {
                 elementCount += storey.elements.length; // Count elements for this model
+
                 for (const element of storey.elements) {
-                  panels.push({
+                  // Create ModelElement record
+                  elementsToCreate.push({
+                    modelId: model.id,
+                    expressId: parseInt(element.id) || 0,
+                    globalId: `${model.id}_${element.id}`,
+                    ifcType: element.type || 'IfcBuildingElement',
+                    storey: storey.name,
+                    properties: {
+                      Name: element.name,
+                      Material: element.material,
+                      Storey: storey.name
+                    }
+                  });
+                }
+              }
+            }
+
+            // Bulk create ModelElements
+            if (elementsToCreate.length > 0) {
+              await prisma.modelElement.createMany({
+                data: elementsToCreate,
+                skipDuplicates: true
+              });
+
+              logger.info(`✅ Created ${elementsToCreate.length} ModelElement records for model ${model.id}`);
+            }
+
+            // Now fetch the created elements to get their IDs and create panels
+            for (const storey of meta.storeys) {
+              if (storey.elements && storey.elements.length) {
+                for (const element of storey.elements) {
+                  // Find the corresponding ModelElement
+                  const modelElement = await prisma.modelElement.findFirst({
+                    where: {
+                      modelId: model.id,
+                      expressId: parseInt(element.id) || 0
+                    }
+                  });
+
+                  panelsToCreate.push({
                     projectId: project.id,
                     modelId: model.id,
+                    elementId: modelElement?.id, // Link to ModelElement
                     name: element.name,
                     tag: element.name,
                     objectType: element.type,
@@ -523,11 +567,18 @@ export function updateMultiFileStatus(
                 }
               }
             }
-            if (panels.length) {
-              await prisma.panel.createMany({ data: panels, skipDuplicates: true });
+
+            // Bulk create panels
+            if (panelsToCreate.length > 0) {
+              await prisma.panel.createMany({
+                data: panelsToCreate,
+                skipDuplicates: true
+              });
+
+              logger.info(`✅ Created ${panelsToCreate.length} Panel records for model ${model.id}`);
             }
           }
-          
+
           // Update model with element count
           await prisma.model.update({
             where: { id: model.id },
@@ -535,7 +586,7 @@ export function updateMultiFileStatus(
           });
 
           // Cleanup temp file
-          try { await (await import('fs')).promises.unlink(f.tempFragPath); } catch {}
+          try { await (await import('fs')).promises.unlink(f.tempFragPath); } catch { }
 
           createdModelIds.push(model.id);
         }
@@ -551,14 +602,14 @@ export function updateMultiFileStatus(
         job.projectId = String(project.id);
         job.projectData = { id: project.id, name: project.name };
         multiFileJobs.set(jobId, job);
-        
+
         await notificationService.projectNotifications.createdSuccess(
           job.projectBase.organizationId,
           job.projectBase.name,
           project.id,
           createdModelIds.length
         );
-        
+
         logger.info(`✅ Multi-file job ${jobId} created project ${project.id} with ${createdModelIds.length} models`);
         logger.info(`🔍 Job status updated to: ${job.status}, progress: ${job.progress}`);
       } catch (e: any) {
@@ -566,13 +617,13 @@ export function updateMultiFileStatus(
         job.message = 'Failed to finalize multi-file project';
         job.error = e?.message || 'Unknown error';
         multiFileJobs.set(jobId, job);
-        
+
         await notificationService.projectNotifications.createdFailed(
           job.projectBase.organizationId,
           job.projectBase.name,
           e?.message || 'Unknown error'
         );
-        
+
         logger.error(`❌ Failed to finalize multi-file job ${jobId}:`, e);
       }
     })();
@@ -581,7 +632,7 @@ export function updateMultiFileStatus(
     job.status = 'failed';
     job.progress = Math.round((completedFiles / job.totalFiles) * 100);
     job.message = `${failedFiles} of ${job.totalFiles} files failed to process`;
-    
+
     notificationService.projectNotifications.createdFailed(
       job.projectBase.organizationId,
       job.projectBase.name,
@@ -590,14 +641,14 @@ export function updateMultiFileStatus(
   } else if (processingFiles > 0) {
     // Still processing - calculate progress based on individual file progress
     let totalProgress = completedFiles * 100; // Completed files contribute 100% each
-    
+
     // Add partial progress from processing files
     job.files.forEach(f => {
       if (f.status === 'processing') {
         totalProgress += f.progress || 0; // Add individual file progress
       }
     });
-    
+
     job.status = 'processing';
     job.progress = Math.min(99, Math.round(totalProgress / job.totalFiles)); // Cap at 99% until all complete
     job.message = `Processing ${processingFiles} files, ${completedFiles} completed...`;
