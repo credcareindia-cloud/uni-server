@@ -104,9 +104,9 @@ router.post('/register', asyncHandler(async (req: Request, res: Response) => {
   }
 
   const token = jwt.sign(
-    { 
-      userId: user.id, 
-      email: user.email, 
+    {
+      userId: user.id,
+      email: user.email,
       role: user.role,
       organizationId: user.organizationId
     },
@@ -158,9 +158,9 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
   }
 
   const token = jwt.sign(
-    { 
-      userId: user.id, 
-      email: user.email, 
+    {
+      userId: user.id,
+      email: user.email,
       role: user.role,
       organizationId: user.organizationId
     },
@@ -200,6 +200,7 @@ router.get('/me', authenticateToken, asyncHandler(async (req: AuthenticatedReque
       name: true,
       role: true,
       avatar: true,
+      organizationId: true,
       createdAt: true,
       updatedAt: true
     }
