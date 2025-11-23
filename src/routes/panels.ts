@@ -111,6 +111,83 @@ router.get('/:projectId/filter-data', async (req, res) => {
   }
 });
 
+// GET /api/panels/:projectId/filter-by-type - Get panels filtered by IFC type with pagination
+// Query params: ifcTypes (comma-separated), page, limit
+// Returns: { panels, total, hasMore, page }
+router.get('/:projectId/filter-by-type', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { ifcTypes, page = '1', limit = '50' } = req.query;
+
+    if (!ifcTypes || typeof ifcTypes !== 'string') {
+      return res.status(400).json({ error: 'ifcTypes parameter is required' });
+    }
+
+    // Parse comma-separated IFC types and trim whitespace
+    const types = ifcTypes.split(',').map(t => t.trim()).filter(t => t.length > 0);
+
+    if (types.length === 0) {
+      return res.status(400).json({ error: 'At least one IFC type must be provided' });
+    }
+
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Fetch panels matching the IFC types with pagination
+    // Use OR with contains to match derived types (e.g. IFCBEAM matches IFCBEAMSTANDARDCASE)
+    const whereCondition = {
+      projectId: parseInt(projectId),
+      element: {
+        OR: types.map(t => ({
+          ifcType: {
+            contains: t,
+            mode: 'insensitive'
+          }
+        }))
+      }
+    };
+
+    const panels = await prisma.panel.findMany({
+      where: whereCondition,
+      select: {
+        id: true,
+        name: true,
+        tag: true,
+        metadata: true, // Contains ifcElementId (localId)
+        element: {
+          select: {
+            ifcType: true,
+            globalId: true
+          }
+        }
+      },
+      skip,
+      take: limitNum,
+      orderBy: {
+        name: 'asc'
+      }
+    });
+
+    // Get total count for pagination
+    const total = await prisma.panel.count({
+      where: whereCondition
+    });
+
+    console.log(`✅ Fetched ${panels.length} of ${total} panels filtered by types: ${types.join(', ')}`);
+
+    res.json({
+      panels,
+      total,
+      hasMore: skip + panels.length < total,
+      page: pageNum
+    });
+  } catch (error) {
+    console.error('Error fetching filtered panels:', error);
+    res.status(500).json({ error: 'Failed to fetch filtered panels' });
+  }
+});
+
 // GET /api/panels/:projectId/all - Get ALL panels for a project (no pagination)
 router.get('/:projectId/all', async (req, res) => {
   try {

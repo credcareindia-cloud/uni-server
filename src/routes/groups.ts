@@ -346,7 +346,7 @@ router.post('/:projectId/:groupId/panels', async (req, res) => {
 
     // Create panel-group assignments (many-to-many)
     const assignmentsToCreate = [];
-    
+
     for (const panelId of panelIds) {
       // Check if this panel is already in this group
       const existing = await prisma.panelGroup.findUnique({
@@ -357,7 +357,7 @@ router.post('/:projectId/:groupId/panels', async (req, res) => {
           }
         }
       });
-      
+
       // Only create if it doesn't exist
       if (!existing) {
         assignmentsToCreate.push({
@@ -366,7 +366,7 @@ router.post('/:projectId/:groupId/panels', async (req, res) => {
         });
       }
     }
-    
+
     // Bulk create assignments
     if (assignmentsToCreate.length > 0) {
       await prisma.panelGroup.createMany({
