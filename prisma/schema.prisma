@@ -256,7 +256,7 @@ model Panel {
   statuses      PanelStatus[] // Many-to-many: Multiple statuses per panel
   groups        PanelGroup[]  // Many-to-many: Multiple groups per panel
   statusHistory StatusHistory[]
-
+  
   @@index([projectId])
   @@index([modelId])
   @@map("panels")
@@ -411,7 +411,7 @@ model UserPanelView {
   userId            String   @map("user_id")
   panelId           String   @map("panel_id")
   lastViewedAt      DateTime @default(now()) @map("last_viewed_at")
-  lastViewedCount   Int      @default(0) @map("last_viewed_count") // Number of submissions at last view
+  lastViewedCount   Int      @default(0) @map("last_viewed_count") 
   
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -447,15 +447,14 @@ enum ProjectStatus {
 }
 
 enum ModelType {
-  FRAG  // Primary 3D format - instantly ready for viewing!
-  // Removed IFC - using FRAG viewer exclusively now
+  FRAG 
 }
 
 enum ModelCategory {
-  STRUCTURE   // Structural components (beams, columns, slabs)
-  MEP         // Mechanical, Electrical, Plumbing
-  ELECTRICAL  // Electrical systems specifically
-  OTHER       // Other/miscellaneous components
+  STRUCTURE   
+  MEP         
+  ELECTRICAL 
+  OTHER       
 }
 
 enum ModelStatus {
