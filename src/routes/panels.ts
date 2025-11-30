@@ -821,8 +821,6 @@ router.get('/:projectId/:panelId', async (req, res) => {
   }
 });
 
-
-
 // POST /api/panels/:projectId - Create a new panel
 router.post('/:projectId', async (req, res) => {
   try {

@@ -7,14 +7,6 @@ FROM node:20-alpine
 RUN apk add --no-cache \
     openssl \
     bash \
-    python3 \
-    make \
-    g++ \
-    cairo-dev \
-    jpeg-dev \
-    pango-dev \
-    giflib-dev \
-    pixman-dev \
     postgresql-client
 
 WORKDIR /app
