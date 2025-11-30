@@ -1,5 +1,7 @@
 import * as FRAGS from '@thatopen/fragments';
 import { logger } from '../utils/logger.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 
 /**
  * IFC to Fragments Converter Service
@@ -11,13 +13,28 @@ export class IfcConverterService {
   constructor() {
     // Initialize IFC serializer with web-ifc WASM
     this.serializer = new FRAGS.IfcImporter();
+
+    // Robust WASM path resolution
+    const wasmPath = this.resolveWasmPath();
     this.serializer.wasm = {
       absolute: true,
-      path: 'file://' + process.cwd() + '/node_modules/web-ifc/'
+      path: wasmPath
     };
 
     logger.info('✅ IFC Converter Service initialized');
-    logger.info(`📦 WASM path: ${process.cwd()}/node_modules/web-ifc/`);
+    logger.info(`📦 WASM path: ${wasmPath}`);
+  }
+
+  private resolveWasmPath(): string {
+    try {
+      // Try to find web-ifc in node_modules
+      const webIfcPath = require.resolve('web-ifc/package.json');
+      const wasmDir = webIfcPath.replace('package.json', '');
+      return 'file://' + wasmDir;
+    } catch (e) {
+      // Fallback to default assumption
+      return 'file://' + process.cwd() + '/node_modules/web-ifc/';
+    }
   }
 
   /**
