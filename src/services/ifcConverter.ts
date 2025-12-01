@@ -55,6 +55,7 @@ export class IfcConverterService {
       const ifcApi = new WebIFC.IfcAPI();
 
       // Initialize WASM
+      ifcApi.SetWasmPath(this.resolveWasmPath());
       await ifcApi.Init();
 
       // Load IFC file
