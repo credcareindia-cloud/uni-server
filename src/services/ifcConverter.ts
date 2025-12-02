@@ -8,9 +8,23 @@ const require = createRequire(import.meta.url);
  * Converts IFC files to optimized .frag format and extracts metadata
  */
 export class IfcConverterService {
-  private serializer: FRAGS.IfcImporter;
+  private serializer: FRAGS.IfcImporter | null = null;
+  private isInitialized: boolean = false;
 
   constructor() {
+    logger.info('✅ IFC Converter Service created (WASM will load on first use)');
+  }
+
+  /**
+   * Lazy initialization - only load WASM when actually needed
+   */
+  private async ensureInitialized(): Promise<void> {
+    if (this.isInitialized && this.serializer) {
+      return; // Already initialized
+    }
+
+    logger.info('🔄 Initializing IFC Converter with WASM...');
+
     // Initialize IFC serializer with web-ifc WASM
     this.serializer = new FRAGS.IfcImporter();
 
@@ -21,7 +35,8 @@ export class IfcConverterService {
       path: wasmPath
     };
 
-    logger.info('✅ IFC Converter Service initialized');
+    this.isInitialized = true;
+    logger.info('✅ IFC Converter initialized');
     logger.info(`📦 WASM path: ${wasmPath}`);
   }
 
@@ -264,8 +279,11 @@ export class IfcConverterService {
     };
   }> {
     try {
+      // Ensure WASM is initialized before processing
+      await this.ensureInitialized();
+
       const fileSizeMB = (ifcBuffer.length / 1024 / 1024).toFixed(2);
-      logger.info(`🔄 Starting IFC → Fragments conversion (${fileSizeMB} MB)`);
+      logger.info(`🔄 Starting IFC → Fragments conversion(${fileSizeMB} MB)`);
 
       // Log memory before conversion
       const memBefore = process.memoryUsage();
@@ -296,11 +314,11 @@ export class IfcConverterService {
           lastProgress = percentage;
           const memNow = process.memoryUsage();
           logger.info(`📊 Conversion progress: ${percentage}% | Memory: ${(memNow.heapUsed / 1024 / 1024).toFixed(2)} MB`);
-          onProgress?.(percentage, `Converting IFC: ${percentage}%`);
+          onProgress?.(percentage, `Converting IFC: ${percentage}% `);
         }
       };
 
-      const fragmentsBuffer: Uint8Array = await (this.serializer as any).process({
+      const fragmentsBuffer: Uint8Array = await (this.serializer! as any).process({
         bytes: ifcBytes,
         progressCallback
       });
@@ -308,7 +326,7 @@ export class IfcConverterService {
       // Log memory after conversion
       const memAfter = process.memoryUsage();
       logger.info(`💾 Memory after conversion: ${(memAfter.heapUsed / 1024 / 1024).toFixed(2)} MB used / ${(memAfter.heapTotal / 1024 / 1024).toFixed(2)} MB total`);
-      logger.info(`✅ IFC converted to Fragments (${(fragmentsBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+      logger.info(`✅ IFC converted to Fragments(${(fragmentsBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
 
       // Cleanup
       if (global.gc) {
@@ -323,13 +341,13 @@ export class IfcConverterService {
 
     } catch (error: any) {
       logger.error('❌ IFC conversion failed:', error);
-      logger.error(`Error details: ${error.stack}`);
+      logger.error(`Error details: ${error.stack} `);
 
       // Log memory on error
       const memError = process.memoryUsage();
       logger.error(`💾 Memory at error: ${(memError.heapUsed / 1024 / 1024).toFixed(2)} MB used / ${(memError.heapTotal / 1024 / 1024).toFixed(2)} MB total`);
 
-      throw new Error(`IFC conversion failed: ${error.message}`);
+      throw new Error(`IFC conversion failed: ${error.message} `);
     }
   }
 
@@ -363,7 +381,7 @@ export class IfcConverterService {
         );
 
         if (isStorey) {
-          const storeyName = node.name || `Storey ${storeys.length + 1}`;
+          const storeyName = node.name || `Storey ${storeys.length + 1} `;
           const elementCount = node.children?.length || 0;
 
           storeys.push({
