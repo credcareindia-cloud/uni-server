@@ -20,17 +20,19 @@ export function initializeWebSocket(httpServer: HttpServer): SocketIOServer {
 
     // Authentication middleware
     io.use((socket: AuthenticatedSocket, next) => {
-        const token = socket.handshake.auth.token;
-
-        if (!token) {
-            return next(new Error('Authentication error: No token provided'));
-        }
-
         try {
+            const token = socket.handshake.auth.token;
+
+            if (!token) {
+                logger.warn('WebSocket connection attempt without token');
+                return next(new Error('Authentication error: No token provided'));
+            }
+
             const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key') as { userId: string };
             socket.userId = decoded.userId;
             next();
         } catch (error) {
+            logger.error('WebSocket authentication error:', error);
             next(new Error('Authentication error: Invalid token'));
         }
     });
