@@ -68,8 +68,8 @@ interface ProcessFirstInternalJob extends ProcessFirstJobData {
 const MAX_CONCURRENCY = Math.max(
   1,
   Math.min(
-    Number(process.env.BACKGROUND_WORKERS || 0) || 
-    (process.env.NODE_ENV === 'production' 
+    Number(process.env.BACKGROUND_WORKERS || 0) ||
+    (process.env.NODE_ENV === 'production'
       ? Math.max(2, Math.floor(os.cpus().length * 0.75)) // More workers in production
       : Math.max(1, Math.floor(os.cpus().length / 2))    // Conservative in development
     ),
@@ -83,7 +83,7 @@ const ACTIVE = new Map<string, Worker>();
 let started = false;
 
 function resolveWorkerUrl(jobType: 'legacy' | 'process-first' = 'legacy') {
-  // Always target compiled JS worker in dist to avoid TS loader in workers
+  // Workers must use compiled JS files from dist (worker threads don't support .ts)
   if (jobType === 'process-first') {
     return new URL('../../dist/queue/processFirst.worker.js', import.meta.url);
   }
@@ -93,9 +93,9 @@ function resolveWorkerUrl(jobType: 'legacy' | 'process-first' = 'legacy') {
 function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
   const isProcessFirst = 'type' in job && job.type === 'process-first';
   const workerUrl = resolveWorkerUrl(isProcessFirst ? 'process-first' : 'legacy');
-  
+
   const jobId = isProcessFirst ? (job as ProcessFirstInternalJob).processingId : (job as InternalJob).modelId;
-  
+
   logger.info(
     `🧵 Spawning ${isProcessFirst ? 'process-first' : 'legacy'} worker for ${jobId} (active=${ACTIVE.size}, pending=${PENDING.length})`
   );

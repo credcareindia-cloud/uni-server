@@ -17,8 +17,8 @@ router.use(authenticateToken);
 router.post('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
-    const { name, description, type, status } = req.body;
-    
+    const { name, description, type, status, color } = req.body;
+
     const newGroup = await prisma.group.create({
       data: {
         projectId: parseInt(projectId),
@@ -28,10 +28,11 @@ router.post('/:projectId', async (req, res) => {
           type: type || 'CUSTOM',
           panelCount: 0
         },
-        status: status || 'PENDING'
+        status: status || 'PENDING',
+        color: color || '#3B82F6'
       }
     });
-    
+
     res.json({ group: newGroup });
   } catch (error) {
     console.error('Error creating group:', error);
@@ -43,26 +44,27 @@ router.post('/:projectId', async (req, res) => {
 router.put('/:groupId', async (req, res) => {
   try {
     const { groupId } = req.params;
-    const { name, description, status, type } = req.body;
-    
+    const { name, description, status, type, color } = req.body;
+
     // Get current group to preserve metadata
     const currentGroup = await prisma.group.findUnique({
       where: { id: groupId }
     });
-    
+
     if (!currentGroup) {
       return res.status(404).json({ error: 'Group not found' });
     }
-    
+
     const metadata = currentGroup.metadata as any || {};
-    
+
     const updatedGroup = await prisma.group.update({
       where: { id: groupId },
       data: {
         ...(name && { name }),
         ...(description !== undefined && { description }),
         ...(status && { status }),
-        ...(type && { 
+        ...(color && { color }),
+        ...(type && {
           metadata: {
             ...metadata,
             type
@@ -70,7 +72,7 @@ router.put('/:groupId', async (req, res) => {
         })
       }
     });
-    
+
     res.json({ group: updatedGroup });
   } catch (error) {
     console.error('Error updating group:', error);
@@ -82,18 +84,17 @@ router.put('/:groupId', async (req, res) => {
 router.delete('/:groupId', async (req, res) => {
   try {
     const { groupId } = req.params;
-    
-    // First, remove group assignment from all panels
-    await prisma.panel.updateMany({
-      where: { groupId },
-      data: { groupId: null }
+
+    // First, remove group assignment from all panels (delete from PanelGroup)
+    await prisma.panelGroup.deleteMany({
+      where: { groupId }
     });
-    
+
     // Then delete the group
     await prisma.group.delete({
       where: { id: groupId }
     });
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('Error deleting group:', error);
@@ -105,21 +106,28 @@ router.delete('/:groupId', async (req, res) => {
 router.post('/assign-panels', async (req, res) => {
   try {
     const { panelIds, groupId } = req.body;
-    
-    await prisma.panel.updateMany({
-      where: { id: { in: panelIds } },
-      data: { groupId }
+
+    // Create PanelGroup entries for each panel
+    // Use createMany if supported (Postgres supports it)
+    const data = panelIds.map((panelId: string) => ({
+      panelId,
+      groupId
+    }));
+
+    await prisma.panelGroup.createMany({
+      data,
+      skipDuplicates: true // Ignore if already assigned
     });
-    
+
     // Update group panel count
-    const panelCount = await prisma.panel.count({
+    const panelCount = await prisma.panelGroup.count({
       where: { groupId }
     });
-    
+
     const group = await prisma.group.findUnique({
       where: { id: groupId }
     });
-    
+
     if (group) {
       const metadata = group.metadata as any || {};
       await prisma.group.update({
@@ -132,7 +140,7 @@ router.post('/assign-panels', async (req, res) => {
         }
       });
     }
-    
+
     res.json({ success: true, updatedCount: panelIds.length });
   } catch (error) {
     console.error('Error assigning panels to group:', error);
@@ -144,22 +152,24 @@ router.post('/assign-panels', async (req, res) => {
 router.post('/remove-panels', async (req, res) => {
   try {
     const { panelIds, groupId } = req.body;
-    
-    await prisma.panel.updateMany({
-      where: { id: { in: panelIds } },
-      data: { groupId: null }
+
+    await prisma.panelGroup.deleteMany({
+      where: {
+        groupId,
+        panelId: { in: panelIds }
+      }
     });
-    
+
     // Update group panel count
     if (groupId) {
-      const panelCount = await prisma.panel.count({
+      const panelCount = await prisma.panelGroup.count({
         where: { groupId }
       });
-      
+
       const group = await prisma.group.findUnique({
         where: { id: groupId }
       });
-      
+
       if (group) {
         const metadata = group.metadata as any || {};
         await prisma.group.update({
@@ -173,7 +183,7 @@ router.post('/remove-panels', async (req, res) => {
         });
       }
     }
-    
+
     res.json({ success: true, updatedCount: panelIds.length });
   } catch (error) {
     console.error('Error removing panels from group:', error);
@@ -186,21 +196,29 @@ router.get('/:groupId/panels', async (req, res) => {
   try {
     const { groupId } = req.params;
     const { page = '1', limit = '50' } = req.query;
-    
+
     const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    
+
     const [panels, totalCount] = await Promise.all([
       prisma.panel.findMany({
-        where: { groupId },
+        where: {
+          groups: {
+            some: { groupId }
+          }
+        },
         skip,
         take: parseInt(limit as string),
         orderBy: { name: 'asc' }
       }),
       prisma.panel.count({
-        where: { groupId }
+        where: {
+          groups: {
+            some: { groupId }
+          }
+        }
       })
     ]);
-    
+
     res.json({
       panels,
       pagination: {

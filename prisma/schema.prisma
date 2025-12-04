@@ -182,6 +182,7 @@ model Group {
   name        String
   description String?
   status      GroupStatus @default(PENDING)
+  color       String      @default("#3B82F6") // Group color for visual distinction
   
   // Group metadata
   elementIds Json? @map("element_ids") // Array of element IDs in this group

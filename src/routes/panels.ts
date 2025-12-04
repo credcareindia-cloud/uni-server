@@ -221,6 +221,7 @@ router.get('/:projectId/all', async (req, res) => {
               select: {
                 id: true,
                 name: true,
+                color: true,
               },
             },
           },
@@ -577,6 +578,7 @@ router.get('/:projectId', async (req, res) => {
               select: {
                 id: true,
                 name: true,
+                color: true,
               },
             },
           },
@@ -777,6 +779,7 @@ router.get('/:projectId/:panelId', async (req, res) => {
                 id: true,
                 name: true,
                 status: true, // Include status field
+                color: true, // Include color field
               },
             },
           },

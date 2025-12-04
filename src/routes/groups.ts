@@ -14,6 +14,7 @@ const createGroupSchema = z.object({
   name: z.string().min(1, 'Group name is required'),
   description: z.string().optional(),
   status: z.nativeEnum(GroupStatus).default(GroupStatus.PENDING),
+  color: z.string().regex(/^#[0-9A-F]{6}$/i, 'Invalid color format').default('#3B82F6'),
   elementIds: z.array(z.string()).optional(),
   metadata: z.record(z.any()).optional(),
 });
@@ -199,6 +200,7 @@ router.get('/:projectId/:groupId/panels', async (req, res) => {
                   select: {
                     id: true,
                     name: true,
+                    color: true,
                   },
                 },
               },
@@ -261,6 +263,7 @@ router.get('/:projectId/:groupId/panels', async (req, res) => {
 router.post('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
+    console.log('📦 Received create group request body:', req.body);
     const validatedData = createGroupSchema.parse(req.body);
 
     const group = await prisma.group.create({
