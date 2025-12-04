@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -26,6 +27,7 @@ import qrCodeRoutes from './routes/qr_routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { startModelProcessingQueue } from './queue/index.js';
+import { initializeWebSocket } from './services/websocket.js';
 
 // Load environment variables
 dotenv.config();
@@ -151,24 +153,38 @@ app.use('*', (req, res) => {
 // Global error handler
 app.use(errorHandler);
 
+// Create HTTP server
+const httpServer = http.createServer(app);
+
+// Start server
+const server = httpServer.listen(PORT, () => {
+  logger.info(`🚀 Server running on port ${PORT}`);
+  logger.info(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+
+  // Start background processing queue
+  startModelProcessingQueue();
+  logger.info('✅ Model processing queue started');
+});
+
+// Initialize WebSocket server
+initializeWebSocket(httpServer);
+logger.info('🔌 WebSocket server initialized');
+
 // Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down gracefully');
-  process.exit(0);
+  server.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
 });
 
 process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down gracefully');
-  process.exit(0);
-});
-
-// Start server
-const server = app.listen(PORT, () => {
-  logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`📊 Health check: http://${process.env.CORS_ORIGIN}?:${PORT}/health`);
-  logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  // Start background workers queue
-  startModelProcessingQueue();
+  server.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
 });
 
 // Increase timeouts for large file uploads

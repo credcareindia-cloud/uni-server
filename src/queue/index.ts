@@ -130,24 +130,16 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
   ACTIVE.set(job.id, worker);
 
   worker.on('message', (msg) => {
-    logger.info(`📨 Worker[${jobId}] message received: ${JSON.stringify(msg)}`);
     if (typeof msg === 'object' && msg) {
       if (msg.type === 'log') {
         logger.info(`👷 Worker[${jobId}]: ${msg.message}`);
       } else if (msg.type === 'progress') {
         logger.info(`👷 Worker[${jobId}] progress: ${msg.value}% - ${msg.message || ''}`);
       } else if (msg.type === 'status_update' && isProcessFirst) {
-        // Handle process-first status updates
-        logger.info(`📊 Handling status_update for ${jobId}`);
         handleProcessingStatusUpdate(msg);
       } else if (msg.type === 'multi_status_update' && isProcessFirst) {
-        logger.info(`📊 Handling multi_status_update for ${jobId}`);
         handleMultiFileStatusUpdate(msg);
-      } else {
-        logger.warn(`⚠️ Unknown message type: ${msg.type} from worker ${jobId}`);
       }
-    } else {
-      logger.warn(`⚠️ Invalid message format from worker ${jobId}: ${JSON.stringify(msg)}`);
     }
   });
 

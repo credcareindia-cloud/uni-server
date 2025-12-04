@@ -1,5 +1,6 @@
 import { prisma } from '../config/database.js';
 import { logger } from '../utils/logger.js';
+import { emitNotificationToUser } from './websocket.js';
 
 export type NotificationType = 'SYSTEM' | 'PROJECT_UPDATE' | 'MODEL_PROCESSED' | 'GROUP_STATUS_CHANGE' | 'USER_MENTION';
 export type NotificationRole = 'ADMIN' | 'MANAGER' | 'VIEWER' | 'BOTH' | 'ALL';
@@ -40,7 +41,7 @@ async function createNotificationsForRole(params: NotificationParams): Promise<s
     select: { id: true },
   });
 
-  const notificationIds = await Promise.all(
+  const notifications = await Promise.all(
     users.map(user =>
       prisma.notification.create({
         data: {
@@ -53,13 +54,30 @@ async function createNotificationsForRole(params: NotificationParams): Promise<s
           recipientRole: recipientRole as any,
           metadata,
         },
-      }).then(n => n.id)
+      })
     )
   );
 
-  logger.info(`Created ${notificationIds.length} notifications for role ${recipientRole} in organization ${organizationId}`);
+  // Emit WebSocket notifications to each user
+  notifications.forEach(notification => {
+    try {
+      emitNotificationToUser(notification.userId, {
+        id: notification.id,
+        title: notification.title,
+        message: notification.message,
+        type: notification.type,
+        read: notification.read,
+        createdAt: notification.createdAt.toISOString(),
+        metadata: notification.metadata as any,
+      });
+    } catch (error) {
+      logger.warn(`Failed to emit WebSocket notification to user ${notification.userId}:`, error);
+    }
+  });
 
-  return notificationIds;
+  logger.info(`Created ${notifications.length} notifications for role ${recipientRole} in organization ${organizationId}`);
+
+  return notifications.map(n => n.id);
 }
 
 export const projectNotifications = {
