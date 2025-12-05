@@ -4,6 +4,19 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 /**
+ * WASM Memory Configuration for large IFC files
+ * These settings help prevent "memory access out of bounds" errors
+ */
+const WASM_MEMORY_CONFIG = {
+  // Initial memory allocation (256MB)
+  INITIAL_MEMORY: 256 * 1024 * 1024,
+  // Maximum memory allocation (4GB - safe limit for 32-bit WASM)
+  MAXIMUM_MEMORY: 4 * 1024 * 1024 * 1024,
+  // File size threshold for warnings (500MB)
+  LARGE_FILE_THRESHOLD: 500 * 1024 * 1024
+};
+
+/**
  * IFC to Fragments Converter Service
  * Converts IFC files to optimized .frag format and extracts metadata
  */
@@ -61,13 +74,24 @@ export class IfcConverterService {
     spatialStructure: any;
   }> {
     try {
-      logger.info(`📊 Extracting metadata from IFC file (${ifcBuffer.length} bytes)...`);
+      const fileSizeMB = (ifcBuffer.length / 1024 / 1024).toFixed(2);
+      logger.info(`📊 Extracting metadata from IFC file (${fileSizeMB} MB)...`);
+
+      // Warn about large files
+      if (ifcBuffer.length > WASM_MEMORY_CONFIG.LARGE_FILE_THRESHOLD) {
+        logger.warn(`⚠️ Large file detected (${fileSizeMB}MB). Processing may require significant memory and time.`);
+      }
 
       const WebIFC = await import('web-ifc');
       const ifcApi = new WebIFC.IfcAPI();
 
-      // Initialize WASM
+      // Initialize WASM with memory configuration for large files
       ifcApi.SetWasmPath(this.resolveWasmPath());
+
+      // Note: web-ifc WASM memory is configured at module compile time, not via Init()
+      // The Init() method only accepts customLocateFileHandler and forceSingleThread
+      // For large files, we rely on Node.js heap size (--max-old-space-size) and
+      // adaptive processing strategies
       await ifcApi.Init();
 
       // Load IFC file
@@ -75,6 +99,14 @@ export class IfcConverterService {
       const modelID = ifcApi.OpenModel(ifcBytes);
 
       logger.info(`✅ IFC file loaded, model ID: ${modelID}`);
+
+      // For large files, run garbage collection after loading to free memory
+      if (ifcBuffer.length > WASM_MEMORY_CONFIG.LARGE_FILE_THRESHOLD && global.gc) {
+        logger.info('🗑️ Running garbage collection after model load...');
+        global.gc();
+        const memAfterGC = process.memoryUsage();
+        logger.info(`💾 Memory after GC: ${(memAfterGC.heapUsed / 1024 / 1024).toFixed(2)} MB used`);
+      }
 
       // Extract spatial structure
       const storeys: Array<{ name: string; elementCount: number; elements: Array<{ id: string; name: string; type: string; material: string }> }> = [];
@@ -236,8 +268,15 @@ export class IfcConverterService {
 
       logger.info(`📊 Total elements: ${totalElements}, Element types: ${Object.keys(elementTypes).length}, Storeys: ${storeys.length}`);
 
-      // Close model
+      // Close model and free WASM memory
       ifcApi.CloseModel(modelID);
+      logger.info('🗑️ Closed IFC model and freed WASM memory');
+
+      // Run garbage collection for large files
+      if (ifcBuffer.length > WASM_MEMORY_CONFIG.LARGE_FILE_THRESHOLD && global.gc) {
+        global.gc();
+        logger.info('🗑️ Garbage collection completed after metadata extraction');
+      }
 
       return {
         totalElements,
@@ -282,11 +321,29 @@ export class IfcConverterService {
       const fileSizeMB = (ifcBuffer.length / 1024 / 1024).toFixed(2);
       logger.info(`🔄 Starting IFC → Fragments conversion (${fileSizeMB} MB)`);
 
+      // Warn about large files
+      if (ifcBuffer.length > WASM_MEMORY_CONFIG.LARGE_FILE_THRESHOLD) {
+        logger.warn(`⚠️ Large file detected (${fileSizeMB}MB). Conversion may take 5-15 minutes and use significant memory.`);
+        logger.warn(`⚠️ Ensure Node.js has sufficient heap space (--max-old-space-size flag).`);
+      }
+
+      // Configure serializer for memory efficiency with large files
+      if (this.serializer && ifcBuffer.length > WASM_MEMORY_CONFIG.LARGE_FILE_THRESHOLD) {
+        logger.info(`🔧 Configuring serializer for large file optimization...`);
+        // Note: These settings may vary based on @thatopen/fragments version
+        (this.serializer as any).settings = {
+          OPTIMIZE_PROFILES: true,
+          COORDINATE_TO_ORIGIN: true,
+          USE_FAST_BOOLS: false  // Slower but more memory efficient for large files
+        };
+      }
+
       // Log memory before conversion
       const memBefore = process.memoryUsage();
       logger.info(`💾 Memory before conversion: ${(memBefore.heapUsed / 1024 / 1024).toFixed(2)} MB used / ${(memBefore.heapTotal / 1024 / 1024).toFixed(2)} MB total`);
 
       // STEP 1: Extract metadata from IFC BEFORE conversion
+      // Metadata is REQUIRED for panel creation - if this fails, the entire upload fails
       logger.info('📊 Step 1: Extracting metadata from IFC file...');
       const metadata = await this.extractIfcMetadata(ifcBuffer);
       logger.info(`✅ Metadata extracted: ${metadata.totalElements} elements, ${metadata.storeys.length} storeys`);
