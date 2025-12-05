@@ -58,16 +58,16 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
     organizationId: req.user.organizationId // ALL queries must filter by organization
   };
 
-  const where: any = req.user.role === 'ADMIN' 
+  const where: any = req.user.role === 'ADMIN'
     ? baseWhere // Admins see all projects in their organization
     : {
-        ...baseWhere,
-        members: {
-          some: {
-            userId: req.user.id
-          }
+      ...baseWhere,
+      members: {
+        some: {
+          userId: req.user.id
         }
-      };
+      }
+    };
 
   if (status) {
     where.status = status;
@@ -339,6 +339,197 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
 }));
 
 /**
+ * DELETE /api/projects/:id/safe-delete
+ */
+router.delete('/:id/safe-delete', requireProjectRole('MANAGER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const projectId = await resolveProjectId(id);
+
+  if (!projectId) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      name: true,
+      _count: {
+        select: {
+          panels: true,
+          groups: true,
+          statuses: true,
+          modelHistory: true
+        }
+      }
+    }
+  });
+
+  if (!project) {
+    throw createApiError('Project not found', 404);
+  }
+
+  logger.info(`Starting safe deletion of project: ${project.name} (ID: ${projectId}) by ${req.user.email}`);
+  logger.info(`Project has ${project._count.panels} panels, ${project._count.groups} groups, ${project._count.statuses} statuses, ${project._count.modelHistory} models`);
+
+  const BATCH_SIZE = 200;
+
+  try {
+    // Step 1: Delete panel-status relationships in batches
+    let deletedPanelStatuses = 0;
+    while (true) {
+      const batch = await prisma.panelStatus.findMany({
+        where: { panel: { projectId } },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+
+      if (batch.length === 0) break;
+
+      await prisma.panelStatus.deleteMany({
+        where: { id: { in: batch.map(ps => ps.id) } }
+      });
+
+      deletedPanelStatuses += batch.length;
+      logger.info(`Deleted ${deletedPanelStatuses} panel-status relationships`);
+    }
+
+    // Step 2: Delete panel-group relationships in batches
+    let deletedPanelGroups = 0;
+    while (true) {
+      const batch = await prisma.panelGroup.findMany({
+        where: { panel: { projectId } },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+
+      if (batch.length === 0) break;
+
+      await prisma.panelGroup.deleteMany({
+        where: { id: { in: batch.map(pg => pg.id) } }
+      });
+
+      deletedPanelGroups += batch.length;
+      logger.info(`Deleted ${deletedPanelGroups} panel-group relationships`);
+    }
+
+    // Step 3: Delete status history in batches
+    let deletedStatusHistory = 0;
+    while (true) {
+      const batch = await prisma.statusHistory.findMany({
+        where: { panel: { projectId } },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+
+      if (batch.length === 0) break;
+
+      await prisma.statusHistory.deleteMany({
+        where: { id: { in: batch.map(sh => sh.id) } }
+      });
+
+      deletedStatusHistory += batch.length;
+      logger.info(`Deleted ${deletedStatusHistory} status history records`);
+    }
+
+    // Step 4: Delete panels in batches
+    let deletedPanels = 0;
+    while (true) {
+      const batch = await prisma.panel.findMany({
+        where: { projectId },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+
+      if (batch.length === 0) break;
+
+      await prisma.panel.deleteMany({
+        where: { id: { in: batch.map(p => p.id) } }
+      });
+
+      deletedPanels += batch.length;
+      logger.info(`Deleted ${deletedPanels} panels`);
+    }
+
+    // Step 5: Delete groups (with their panel relationships already deleted)
+    const deletedGroupsResult = await prisma.group.deleteMany({
+      where: { projectId }
+    });
+    logger.info(`Deleted ${deletedGroupsResult.count} groups`);
+
+    // Step 6: Delete statuses (with their panel relationships already deleted)
+    const deletedStatusesResult = await prisma.status.deleteMany({
+      where: { projectId }
+    });
+    logger.info(`Deleted ${deletedStatusesResult.count} statuses`);
+
+    // Step 7: Delete model elements in batches
+    let deletedModelElements = 0;
+    const models = await prisma.model.findMany({
+      where: { projectId },
+      select: { id: true }
+    });
+
+    for (const model of models) {
+      while (true) {
+        const batch = await prisma.modelElement.findMany({
+          where: { modelId: model.id },
+          take: BATCH_SIZE,
+          select: { id: true }
+        });
+
+        if (batch.length === 0) break;
+
+        await prisma.modelElement.deleteMany({
+          where: { id: { in: batch.map(me => me.id) } }
+        });
+
+        deletedModelElements += batch.length;
+      }
+    }
+    logger.info(`Deleted ${deletedModelElements} model elements`);
+
+    // Step 8: Delete models
+    const deletedModelsResult = await prisma.model.deleteMany({
+      where: { projectId }
+    });
+    logger.info(`Deleted ${deletedModelsResult.count} models`);
+
+    // Step 9: Delete project members
+    const deletedMembersResult = await prisma.projectMember.deleteMany({
+      where: { projectId }
+    });
+    logger.info(`Deleted ${deletedMembersResult.count} project members`);
+
+    // Step 10: Finally delete the project itself
+    await prisma.project.delete({
+      where: { id: projectId }
+    });
+
+    logger.info(`✅ Successfully deleted project: ${project.name} (ID: ${projectId})`);
+    logger.info(`Summary: ${deletedPanels} panels, ${deletedGroupsResult.count} groups, ${deletedStatusesResult.count} statuses, ${deletedModelsResult.count} models`);
+
+    res.json({
+      message: 'Project deleted successfully',
+      projectId: projectId,
+      summary: {
+        panels: deletedPanels,
+        groups: deletedGroupsResult.count,
+        statuses: deletedStatusesResult.count,
+        models: deletedModelsResult.count,
+        members: deletedMembersResult.count
+      }
+    });
+  } catch (error) {
+    logger.error(`Failed to delete project ${projectId}:`, error);
+    throw createApiError('Failed to delete project. Some data may have been partially deleted.', 500);
+  }
+}));
+
+/**
  * DELETE /api/projects/:id
  * Delete a project (MANAGER+ role required)
  */
@@ -374,6 +565,7 @@ router.delete('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Au
     projectId: projectId
   });
 }));
+
 
 /**
  * GET /api/projects/:id/activities
@@ -418,7 +610,7 @@ router.get('/:id/panels', requireProjectRole('VIEWER'), asyncHandler(async (req:
 
   // Build where clause for panel filtering
   const where: any = { projectId };
-  
+
   // If modelId is provided, filter by specific model
   if (modelId && modelId !== 'all') {
     where.modelId = modelId as string;
@@ -514,8 +706,8 @@ router.get('/:id/panels', requireProjectRole('VIEWER'), asyncHandler(async (req:
     groups: panel.groups,
     // Status information (keep full object structure for modal)
     statuses: panel.statuses,
-    status: panel.statuses.length > 0 
-      ? panel.statuses[0].status.name 
+    status: panel.statuses.length > 0
+      ? panel.statuses[0].status.name
       : 'READY_FOR_PRODUCTION',
     // Additional display fields
     storey: panel.location || 'Unknown',
@@ -583,9 +775,9 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
   const panelCounts = await Promise.all(
     project.modelHistory.map(async (model) => {
       const panelCount = await prisma.panel.count({
-        where: { 
+        where: {
           projectId: projectId,
-          modelId: model.id 
+          modelId: model.id
         }
       });
       return { modelId: model.id, panelCount };
@@ -598,17 +790,17 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
 
   // Transform models for dropdown display and remove duplicates
   const uniqueModels = new Map();
-  
+
   project.modelHistory.forEach(model => {
     // Skip if we already have this model (by ID)
     if (uniqueModels.has(model.id)) {
       return;
     }
-    
+
     // Create a more descriptive name
     const baseName = model.originalFilename.replace(/\.(ifc|frag)$/i, '');
     const panelCount = panelCountMap[model.id] || 0;
-    
+
     // Improve category detection from filename if category is 'OTHER'
     let finalCategory = model.category;
     if (model.category === 'OTHER' || !model.category) {
@@ -623,11 +815,11 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
         finalCategory = 'OTHER';
       }
     }
-    
-    const displayName = model.displayName && model.displayName !== 'Other' 
-      ? model.displayName 
+
+    const displayName = model.displayName && model.displayName !== 'Other'
+      ? model.displayName
       : baseName;
-    
+
     uniqueModels.set(model.id, {
       id: model.id,
       name: displayName,
@@ -639,7 +831,7 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
       createdAt: model.createdAt
     });
   });
-  
+
   const models = Array.from(uniqueModels.values());
 
   res.json({
