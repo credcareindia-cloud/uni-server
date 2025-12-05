@@ -18,8 +18,10 @@ COPY prisma ./prisma/
 # Install dependencies
 RUN npm ci
 
-# Generate Prisma Client
-RUN npx prisma generate
+# CRITICAL FIX: Generate Prisma Client for Linux (prevents segmentation faults)
+# This ensures the correct binary is used in AWS Fargate
+ENV PRISMA_CLI_BINARY_TARGETS="linux-musl-openssl-3.0.x"
+RUN npx prisma generate --generator client
 
 # Copy tsconfig and source
 COPY tsconfig*.json ./
