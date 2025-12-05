@@ -13,7 +13,7 @@
     "build:prod": "prisma generate && tsc --noEmit false --skipLibCheck --noUnusedLocals false --noUnusedParameters false",
     "build:prod:soft": "prisma generate && tsc --noEmit false || true",
     "build:prod:quiet": "prisma generate && tsc --noEmit false >/dev/null 2>&1 || true",
-    "start": "node --max-old-space-size=16384 --expose-gc dist/index.js",
+    "start": "node --max-old-space-size=14336 dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",

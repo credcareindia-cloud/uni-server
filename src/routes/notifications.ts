@@ -1,11 +1,24 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
+import rateLimit from 'express-rate-limit';
 import { prisma } from '../config/database.js';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
 import { logger } from '../utils/logger.js';
 
 const router = Router();
+
+// Rate limiting for notification endpoints to prevent rapid polling
+const notificationLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // limit each IP to 30 requests per minute
+  message: 'Too many notification requests, please slow down',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting to all notification routes
+router.use(notificationLimiter);
 
 // Validation schemas
 const querySchema = z.object({
@@ -383,7 +396,7 @@ export async function createNotificationsForRole(params: {
 
   // Determine which roles should receive the notification
   let roleFilter: ('ADMIN' | 'MANAGER' | 'VIEWER')[] = [];
-  
+
   if (recipientRole === 'ADMIN') {
     roleFilter = ['ADMIN'];
   } else if (recipientRole === 'MANAGER') {
@@ -425,7 +438,7 @@ export async function createNotificationsForRole(params: {
   );
 
   logger.info(`Created ${notificationIds.length} notifications for role ${recipientRole} in organization ${organizationId}`);
-  
+
   return notificationIds;
 }
 
