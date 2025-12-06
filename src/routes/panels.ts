@@ -83,8 +83,13 @@ router.get('/:projectId/filter-data', async (req, res) => {
   try {
     const { projectId } = req.params;
 
+    // SAFETY LIMIT: Prevent fetching massive datasets that crash the server
+    // If a project has > 20k panels, we might need a different strategy (chunking)
+    const SAFETY_LIMIT = 20000;
+
     const panels = await prisma.panel.findMany({
       where: { projectId: parseInt(projectId) },
+      take: SAFETY_LIMIT,
       select: {
         id: true,
         elementId: true,
@@ -101,13 +106,22 @@ router.get('/:projectId/filter-data', async (req, res) => {
 
     console.log(`✅ Fetched ${panels.length} panels (filter data only) for project ${projectId}`);
 
+    if (panels.length >= SAFETY_LIMIT) {
+      console.warn(`⚠️ WARNING: Project ${projectId} hit the safety limit of ${SAFETY_LIMIT} panels. Some data may be missing.`);
+    }
+
     res.json({
       panels,
       total: panels.length,
+      limitReached: panels.length >= SAFETY_LIMIT
     });
   } catch (error) {
-    console.error('Error fetching panel filter data:', error);
-    res.status(500).json({ error: 'Failed to fetch panel filter data' });
+    console.error('❌ CRITICAL ERROR fetching panel filter data:', error);
+    // Return 500 but with JSON error that frontend might handle gracefully
+    res.status(500).json({
+      error: 'Failed to fetch panel filter data',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 
