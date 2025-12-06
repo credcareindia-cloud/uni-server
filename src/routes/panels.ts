@@ -561,17 +561,21 @@ router.get('/:projectId', async (req, res) => {
       };
     }
 
-    // Filter by status ID (many-to-many relationship)
-    if (status) {
-      where.statuses = {
+    // Filter by multiple group IDs (new multi-select support)
+    // Reverted to OR logic (standard behavior) - show panels in ANY of the selected groups
+    const groupIds = req.query.groupIds;
+    if (groupIds) {
+      const groupIdArray = Array.isArray(groupIds) ? groupIds : [groupIds];
+      where.groups = {
         some: {
-          statusId: status as string
+          groupId: {
+            in: groupIdArray as string[]
+          }
         }
       };
     }
-
-    // Filter by group ID (many-to-many relationship)
-    if (groupId) {
+    // Legacy single groupId support
+    else if (groupId) {
       where.groups = {
         some: {
           groupId: groupId as string
@@ -579,8 +583,29 @@ router.get('/:projectId', async (req, res) => {
       };
     }
 
-    // Filter by custom status ID (many-to-many relationship) - legacy support
-    if (customStatusId) {
+    // Filter by multiple status IDs (new multi-select support)
+    // Reverted to OR logic (standard behavior) - show panels with ANY of the selected statuses
+    const statusIds = req.query.statusIds;
+    if (statusIds) {
+      const statusIdArray = Array.isArray(statusIds) ? statusIds : [statusIds];
+      where.statuses = {
+        some: {
+          statusId: {
+            in: statusIdArray as string[]
+          }
+        }
+      };
+    }
+    // Legacy single status support
+    else if (status) {
+      where.statuses = {
+        some: {
+          statusId: status as string
+        }
+      };
+    }
+    // Legacy custom status ID support
+    else if (customStatusId) {
       where.statuses = {
         some: {
           statusId: customStatusId as string
@@ -772,62 +797,54 @@ router.get('/:projectId/health', async (req, res) => {
 router.get('/:projectId/statistics', async (req, res) => {
   try {
     const { projectId } = req.params;
+    const projectIdInt = parseInt(projectId);
 
     // Get total panels count
     const totalPanels = await prisma.panel.count({
-      where: { projectId: parseInt(projectId) },
+      where: { projectId: projectIdInt },
     });
 
-    // Get status distribution (from many-to-many PanelStatus table)
-    const statusCounts = await prisma.panelStatus.groupBy({
-      by: ['statusId'],
-      where: {
-        panel: {
-          projectId: parseInt(projectId),
-        },
-      },
-      _count: { statusId: true },
-    });
-
-    // Get all statuses for this project to map IDs to names
+    // Get all statuses with panel counts
     const statuses = await prisma.status.findMany({
-      where: { projectId: parseInt(projectId) },
-      select: { id: true, name: true },
+      where: { projectId: projectIdInt },
+      include: {
+        _count: {
+          select: { panelStatuses: true }
+        }
+      }
     });
 
-    const statusMap = new Map(statuses.map(s => [s.id, s.name]));
-
-    // Get group distribution (from many-to-many PanelGroup table)
-    const groupCounts = await prisma.panelGroup.groupBy({
-      by: ['groupId'],
-      where: {
-        panel: {
-          projectId: parseInt(projectId),
-        },
-      },
-      _count: { groupId: true },
-    });
-
-    // Get all groups for this project to map IDs to names
+    // Get all groups with panel counts
     const groups = await prisma.group.findMany({
-      where: { projectId: parseInt(projectId) },
-      select: { id: true, name: true },
+      where: { projectId: projectIdInt },
+      include: {
+        _count: {
+          select: { panelGroups: true }
+        }
+      }
     });
-
-    const groupMap = new Map(groups.map(g => [g.id, g.name]));
 
     const statistics = {
       totalPanels,
-      statusDistribution: statusCounts.reduce((acc, item) => {
-        const statusName = statusMap.get(item.statusId) || item.statusId;
-        acc[statusName] = item._count.statusId;
+      // Return counts by ID for easy lookup
+      statusCountsById: statuses.reduce((acc, status) => {
+        acc[status.id] = status._count.panelStatuses;
         return acc;
       }, {} as Record<string, number>),
-      groupDistribution: groupCounts.map(item => ({
-        groupId: item.groupId,
-        groupName: groupMap.get(item.groupId) || 'Unknown',
-        count: item._count.groupId,
-      })),
+      groupCountsById: groups.reduce((acc, group) => {
+        acc[group.id] = group._count.panelGroups;
+        return acc;
+      }, {} as Record<string, number>),
+      // Legacy formats for backward compatibility
+      statusDistribution: statuses.reduce((acc, status) => {
+        acc[status.name] = status._count.panelStatuses;
+        return acc;
+      }, {} as Record<string, number>),
+      groupDistribution: groups.map(group => ({
+        groupId: group.id,
+        groupName: group.name,
+        count: group._count.panelGroups
+      }))
     };
 
     res.json(statistics);

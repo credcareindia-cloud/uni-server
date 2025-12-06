@@ -1,13 +1,16 @@
 # Backend Dockerfile for Uniqube 3D
 # Image size can be optimized later with multi-stage + prune once infrastructure is stable
 
-FROM node:20-alpine
+FROM node:20-slim
 
-# Install required system dependencies for canvas (Python, build tools, Cairo, Pango, etc.)
-RUN apk add --no-cache \
+# Install required system dependencies for Prisma and other native modules
+# openssl and ca-certificates are required for Prisma
+# procps provides 'ps' command which might be needed
+RUN apt-get update -y && apt-get install -y \
     openssl \
-    bash \
-    postgresql-client
+    ca-certificates \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -18,9 +21,9 @@ COPY prisma ./prisma/
 # Install dependencies
 RUN npm ci
 
-# CRITICAL FIX: Generate Prisma Client for Linux (prevents segmentation faults)
-# This ensures the correct binary is used in AWS Fargate
-ENV PRISMA_CLI_BINARY_TARGETS="linux-musl-openssl-3.0.x"
+# CRITICAL FIX: Generate Prisma Client for Debian (prevents segmentation faults)
+# This ensures the correct binary is used in AWS Fargate (Debian-based)
+ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
 RUN npx prisma generate --generator client
 
 # Copy tsconfig and source
