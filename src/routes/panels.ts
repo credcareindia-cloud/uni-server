@@ -351,12 +351,13 @@ router.get('/:projectId/panel-location', async (req, res) => {
     // Find panel by metadata.ifcElementId
     // Note: metadata is a JSON field, so we need to query it carefully
     // Prisma's JSON filtering capabilities depend on the DB, but for simple equality it works
+    // Find panel by ModelElement.expressId (which matches the viewer's localId)
+    // This is much more robust than querying the metadata JSON
     const panel = await prisma.panel.findFirst({
       where: {
         projectId: parseInt(projectId),
-        metadata: {
-          path: ['ifcElementId'],
-          equals: localId.toString() // Store as string in JSON
+        element: {
+          expressId: parseInt(localId as string)
         }
       },
       select: {
