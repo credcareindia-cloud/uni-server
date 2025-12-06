@@ -79,49 +79,52 @@ router.get('/:projectId/filters', async (req, res) => {
 
 // GET /api/panels/:projectId/filter-data - Get minimal panel data for IFC type filtering
 // Returns only essential fields needed for filtering: id, elementId, ifcType, metadata.ifcElementId
+// OPTIMIZED: Uses raw query to avoid fetching full metadata JSON which causes OOM/502s
 router.get('/:projectId/filter-data', async (req, res) => {
   try {
     const { projectId } = req.params;
+    const projectIdInt = parseInt(projectId);
 
-    // SAFETY LIMIT: Prevent fetching massive datasets that crash the server
-    // If a project has > 20k panels, we might need a different strategy (chunking)
-    const SAFETY_LIMIT = 20000;
-
-    const panels = await prisma.panel.findMany({
-      where: { projectId: parseInt(projectId) },
-      take: SAFETY_LIMIT,
-      select: {
-        id: true,
-        elementId: true,
-        metadata: true, // Contains ifcElementId
-        element: {
-          select: {
-            id: true,
-            ifcType: true,
-            globalId: true,
-          }
-        }
-      }
-    });
-
-    console.log(`✅ Fetched ${panels.length} panels (filter data only) for project ${projectId}`);
-
-    if (panels.length >= SAFETY_LIMIT) {
-      console.warn(`⚠️ WARNING: Project ${projectId} hit the safety limit of ${SAFETY_LIMIT} panels. Some data may be missing.`);
+    if (isNaN(projectIdInt)) {
+      return res.status(400).json({ error: 'Invalid project ID' });
     }
+
+    // Use raw query to fetch ONLY what we need
+    // This avoids loading the huge 'metadata' JSON blob for thousands of panels
+    const rawPanels = await prisma.$queryRaw<any[]>`
+      SELECT 
+        p.id, 
+        p.element_id as "elementId", 
+        p.metadata->>'ifcElementId' as "ifcElementId",
+        me.id as "modelElementId",
+        me.ifc_type as "ifcType",
+        me.global_id as "globalId"
+      FROM panels p
+      LEFT JOIN model_elements me ON p.element_id = me.id
+      WHERE p.project_id = ${projectIdInt}
+    `;
+
+    // Map back to the structure expected by the frontend
+    const panels = rawPanels.map(p => ({
+      id: p.id,
+      elementId: p.elementId,
+      metadata: { ifcElementId: p.ifcElementId }, // Reconstruct minimal metadata
+      element: p.modelElementId ? {
+        id: p.modelElementId,
+        ifcType: p.ifcType,
+        globalId: p.globalId,
+      } : null
+    }));
+
+    console.log(`✅ Fetched ${panels.length} panels (optimized filter data) for project ${projectId}`);
 
     res.json({
       panels,
       total: panels.length,
-      limitReached: panels.length >= SAFETY_LIMIT
     });
   } catch (error) {
-    console.error('❌ CRITICAL ERROR fetching panel filter data:', error);
-    // Return 500 but with JSON error that frontend might handle gracefully
-    res.status(500).json({
-      error: 'Failed to fetch panel filter data',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
+    console.error('Error fetching panel filter data:', error);
+    res.status(500).json({ error: 'Failed to fetch panel filter data' });
   }
 });
 
