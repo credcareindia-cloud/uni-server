@@ -79,7 +79,6 @@ router.get('/:projectId/filters', async (req, res) => {
 
 // GET /api/panels/:projectId/filter-data - Get minimal panel data for IFC type filtering
 // Returns only essential fields needed for filtering: id, elementId, ifcType, metadata.ifcElementId
-// OPTIMIZED: Uses raw query to avoid fetching full metadata JSON which causes OOM/502s
 router.get('/:projectId/filter-data', async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -89,42 +88,24 @@ router.get('/:projectId/filter-data', async (req, res) => {
       return res.status(400).json({ error: 'Invalid project ID' });
     }
 
-    // Use raw query to fetch ONLY what we need
-    // This avoids loading the huge 'metadata' JSON blob for thousands of panels
-    const rawPanels = await prisma.$queryRaw<any[]>`
-      SELECT 
-        p.id, 
-        p.element_id as "elementId", 
-        p.metadata->>'ifcElementId' as "ifcElementId",
-        me.id as "modelElementId",
-        me.ifc_type as "ifcType",
-        me.global_id as "globalId"
-      FROM panels p
-      LEFT JOIN model_elements me ON p.element_id = me.id
-      WHERE p.project_id = ${projectIdInt}
-    `;
+    // REVERTED: Raw query caused 502s. Using findMany.
+    const panels = await prisma.panel.findMany({
+      where: { projectId: parseInt(projectId) },
+      select: {
+        id: true,
+        elementId: true,
+        metadata: true, // Contains ifcElementId
+        element: {
+          select: {
+            id: true,
+            ifcType: true,
+            globalId: true,
+          }
+        }
+      }
+    });
 
-    // Map back to the structure expected by the frontend
-    const panels = rawPanels.map(p => ({
-      id: p.id,
-      elementId: p.elementId,
-      metadata: { ifcElementId: p.ifcElementId }, // Reconstruct minimal metadata
-      element: p.modelElementId ? {
-        id: p.modelElementId,
-        ifcType: p.ifcType,
-        globalId: p.globalId,
-      } : null
-    }));
-
-    console.log(`✅ Fetched ${panels.length} panels 
-      
-      
-      
-      
-      
-      
-      
-      filter data) for project ${projectId}`);
+    console.log(`✅ Fetched ${panels.length} panels (filter data only) for project ${projectId}`);
 
     res.json({
       panels,
@@ -160,64 +141,43 @@ router.get('/:projectId/filter-by-type', async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
 
     // Fetch panels matching the IFC types with pagination
-    // OPTIMIZED: Use raw query to avoid fetching full metadata JSON
-    const rawPanels = await prisma.$queryRaw<any[]>`
-      SELECT 
-        p.id, 
-        p.name,
-        p.tag,
-        p.metadata->>'ifcElementId' as "ifcElementId",
-        me.id as "modelElementId",
-        me.ifc_type as "ifcType",
-        me.global_id as "globalId"
-      FROM panels p
-      LEFT JOIN model_elements me ON p.element_id = me.id
-      WHERE p.project_id = ${parseInt(projectId)}
-      AND (
-        ${Prisma.join(
-      types.map(t => Prisma.sql`me.ifc_type ILIKE ${'%' + t + '%'}`),
-      ' OR '
-    )}
-      )
-      ORDER BY p.name ASC
-      LIMIT ${limitNum} OFFSET ${skip}
-    `;
+    // REVERTED: Raw query caused 502s. Using findMany with optimized select.
+    const whereCondition = {
+      projectId: parseInt(projectId),
+      element: {
+        OR: types.map(t => ({
+          ifcType: {
+            contains: t,
+            mode: 'insensitive'
+          }
+        }))
+      }
+    };
 
-    // Map back to expected structure
-    const panels = rawPanels.map(p => ({
-      id: p.id,
-      name: p.name,
-      tag: p.tag,
-      metadata: { ifcElementId: p.ifcElementId },
-      element: p.modelElementId ? {
-        ifcType: p.ifcType,
-        globalId: p.globalId
-      } : null
-    }));
+    const panels = await prisma.panel.findMany({
+      where: whereCondition,
+      select: {
+        id: true,
+        name: true,
+        tag: true,
+        metadata: true, // Contains ifcElementId
+        element: {
+          select: {
+            ifcType: true,
+            globalId: true
+          }
+        }
+      },
+      skip,
+      take: limitNum,
+      orderBy: {
+        name: 'asc'
+      }
+    });
 
-    // Get total count for pagination (optimized)
-    const totalCountResult = await prisma.$queryRaw<any[]>`
-      SELECT COUNT(*)::int as count
-      FROM panels p
-      LEFT JOIN model_elements me ON p.element_id = me.id
-      WHERE p.project_id = ${parseInt(projectId)}
-      AND (
-        ${Prisma.join(
-      types.map(t => Prisma.sql`me.ifc_type ILIKE ${'%' + t + '%'}`),
-      ' OR '
-    )}
-      )
-    `;
-
-    const total = totalCountResult[0]?.count || 0;
-
-    console.log(`✅ Fetched ${panels.length} of ${total} panels filtered by types: ${types.join(', ')} (optimized)`);
-
-    res.json({
-      panels,
-      total,
-      hasMore: skip + panels.length < total,
-      page: pageNum
+    // Get total count for pagination
+    const total = await prisma.panel.count({
+      where: whereCondition
     });
 
     console.log(`✅ Fetched ${panels.length} of ${total} panels filtered by types: ${types.join(', ')}`);
