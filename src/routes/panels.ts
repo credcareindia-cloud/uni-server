@@ -94,13 +94,13 @@ router.get('/:projectId/filter-data', async (req, res) => {
       select: {
         id: true,
         elementId: true,
-        metadata: true, // Contains ifcElementId
+        metadata: true,
         element: {
           select: {
             id: true,
             ifcType: true,
             globalId: true,
-            expressId: true, // Include expressId for robust mapping
+            expressId: true,
           }
         }
       }
@@ -615,6 +615,7 @@ router.get('/:projectId', async (req, res) => {
             id: true,
             ifcType: true,
             globalId: true,
+            expressId: true, // Include expressId for robust mapping
           },
         },
         statusHistory: {
