@@ -88,7 +88,7 @@ router.get('/:projectId/filter-data', async (req, res) => {
       return res.status(400).json({ error: 'Invalid project ID' });
     }
 
-    // REVERTED: Raw query caused 502s. Using findMany.
+
     const panels = await prisma.panel.findMany({
       where: { projectId: parseInt(projectId) },
       select: {
@@ -100,6 +100,7 @@ router.get('/:projectId/filter-data', async (req, res) => {
             id: true,
             ifcType: true,
             globalId: true,
+            expressId: true, // Include expressId for robust mapping
           }
         }
       }
@@ -141,7 +142,6 @@ router.get('/:projectId/filter-by-type', async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
 
     // Fetch panels matching the IFC types with pagination
-    // REVERTED: Raw query caused 502s. Using findMany with optimized select.
     const whereCondition = {
       projectId: parseInt(projectId),
       element: {
@@ -160,7 +160,7 @@ router.get('/:projectId/filter-by-type', async (req, res) => {
         id: true,
         name: true,
         tag: true,
-        metadata: true, // Contains ifcElementId
+        metadata: true,
         element: {
           select: {
             ifcType: true,
