@@ -410,6 +410,74 @@ router.get('/:projectId/panel-location', async (req, res) => {
   }
 });
 
+// GET /api/panels/:projectId/by-express-id/:expressId - Get panel directly by expressId
+// This is used by the selection tool to fetch panel data without relying on lazy loading
+router.get('/:projectId/by-express-id/:expressId', async (req, res) => {
+  try {
+    const { projectId, expressId } = req.params;
+
+    const panel = await prisma.panel.findFirst({
+      where: {
+        projectId: parseInt(projectId),
+        element: {
+          expressId: parseInt(expressId)
+        }
+      },
+      include: {
+        groups: {
+          include: {
+            group: {
+              select: {
+                id: true,
+                name: true,
+                status: true,
+                color: true,
+              },
+            },
+          },
+        },
+        statuses: {
+          include: {
+            status: {
+              select: {
+                id: true,
+                name: true,
+                color: true,
+                icon: true,
+                description: true,
+                order: true,
+              },
+            },
+          },
+        },
+        model: {
+          select: {
+            id: true,
+            originalFilename: true,
+          },
+        },
+        element: {
+          select: {
+            id: true,
+            ifcType: true,
+            globalId: true,
+            expressId: true,
+          },
+        },
+      },
+    });
+
+    if (!panel) {
+      return res.status(404).json({ error: 'Panel not found' });
+    }
+
+    res.json(panel);
+  } catch (error) {
+    console.error('Error fetching panel by expressId:', error);
+    res.status(500).json({ error: 'Failed to fetch panel' });
+  }
+});
+
 // GET /api/panels/:projectId/panel-location/:panelId - Find panel location in tree
 router.get('/:projectId/panel-location/:panelId', async (req, res) => {
   try {
