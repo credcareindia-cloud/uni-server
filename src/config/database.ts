@@ -83,7 +83,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('beforeExit', () => {
   if (!isShuttingDown) {
-    logger.info('Process exiting, disconnecting database...');
+    // Only log in development - production auto-scaling generates too much noise
+    if (process.env.NODE_ENV !== 'production') {
+      logger.info('Process exiting, disconnecting database...');
+    }
     prisma.$disconnect().catch((err) => logger.error('Error on beforeExit:', err));
   }
 });
