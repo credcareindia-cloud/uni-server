@@ -69,13 +69,42 @@ jobs:
           docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:latest
           docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
 
-      - name: Force new deployment on ECS service (pull latest)
+      - name: Update task definition and force deployment
         if: ${{ env.ECS_CLUSTER != '' && env.ECS_SERVICE != '' }}
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
+          # Get current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition $(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].taskDefinition' \
+              --output text) \
+            --query 'taskDefinition' \
+            --output json)
+          
+          # Update image in task definition to use new SHA tag
+          NEW_TASK_DEF=$(echo $TASK_DEFINITION | jq --arg IMAGE "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            '.containerDefinitions[0].image = $IMAGE | 
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+          
+          # Register new task definition
+          NEW_TASK_ARN=$(echo $NEW_TASK_DEF | jq -r '@json' | \
+            xargs -0 aws ecs register-task-definition --cli-input-json | \
+            jq -r '.taskDefinition.taskDefinitionArn')
+          
+          echo "New task definition: $NEW_TASK_ARN"
+          
+          # Update service to use new task definition and force deployment
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TASK_ARN" \
             --force-new-deployment
+          
+          echo "✅ Service updated with new image: $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
       - name: (Optional) Run Prisma migrations against production
         if: ${{ github.event.inputs.run_migrations == 'true' }}
