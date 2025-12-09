@@ -65,6 +65,11 @@ interface ProcessFirstInternalJob extends ProcessFirstJobData {
   type: 'process-first';
 }
 
+interface ProjectDeletionInternalJob extends ProjectDeletionJobData {
+  id: string;
+  type: 'deletion';
+}
+
 const MAX_CONCURRENCY = Math.max(
   1,
   Math.min(
@@ -77,27 +82,38 @@ const MAX_CONCURRENCY = Math.max(
   )
 );
 
-const PENDING: (InternalJob | ProcessFirstInternalJob)[] = [];
+const PENDING: (InternalJob | ProcessFirstInternalJob | ProjectDeletionInternalJob)[] = [];
 const ACTIVE = new Map<string, Worker>();
 
 let started = false;
 
-function resolveWorkerUrl(jobType: 'legacy' | 'process-first' = 'legacy') {
+function resolveWorkerUrl(jobType: 'legacy' | 'process-first' | 'deletion' = 'legacy') {
   // Workers must use compiled JS files from dist (worker threads don't support .ts)
   if (jobType === 'process-first') {
     return new URL('../../dist/queue/processFirst.worker.js', import.meta.url);
+  } else if (jobType === 'deletion') {
+    return new URL('../../dist/queue/projectDeletion.worker.js', import.meta.url);
   }
   return new URL('../../dist/queue/modelProcessor.worker.js', import.meta.url);
 }
 
-function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
+function spawnWorker(job: InternalJob | ProcessFirstInternalJob | ProjectDeletionInternalJob) {
   const isProcessFirst = 'type' in job && job.type === 'process-first';
-  const workerUrl = resolveWorkerUrl(isProcessFirst ? 'process-first' : 'legacy');
+  const isDeletion = 'type' in job && job.type === 'deletion';
 
-  const jobId = isProcessFirst ? (job as ProcessFirstInternalJob).processingId : (job as InternalJob).modelId;
+  const workerUrl = resolveWorkerUrl(isProcessFirst ? 'process-first' : (isDeletion ? 'deletion' : 'legacy'));
+
+  let jobId: string;
+  if (isProcessFirst) {
+    jobId = (job as ProcessFirstInternalJob).processingId;
+  } else if (isDeletion) {
+    jobId = (job as ProjectDeletionInternalJob).jobId;
+  } else {
+    jobId = (job as InternalJob).modelId;
+  }
 
   logger.info(
-    `🧵 Spawning ${isProcessFirst ? 'process-first' : 'legacy'} worker for ${jobId} (active=${ACTIVE.size}, pending=${PENDING.length})`
+    `🧵 Spawning ${isProcessFirst ? 'process-first' : (isDeletion ? 'deletion' : 'legacy')} worker for ${jobId} (active=${ACTIVE.size}, pending=${PENDING.length})`
   );
 
   let workerData: any;
@@ -114,6 +130,13 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
       multiFileJobId: pfJob.multiFileJobId,
       fileIndex: pfJob.fileIndex,
       category: pfJob.category,
+    };
+  } else if (isDeletion) {
+    const delJob = job as ProjectDeletionInternalJob;
+    workerData = {
+      jobId: delJob.jobId,
+      projectId: delJob.projectId,
+      userId: delJob.userId
     };
   } else {
     const legacyJob = job as InternalJob;
@@ -139,6 +162,8 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob) {
         handleProcessingStatusUpdate(msg);
       } else if (msg.type === 'multi_status_update' && isProcessFirst) {
         handleMultiFileStatusUpdate(msg);
+      } else if (msg.type === 'deletion_status_update' && isDeletion) {
+        handleDeletionStatusUpdate(msg);
       }
     }
   });
@@ -176,6 +201,25 @@ function handleProcessingStatusUpdate(msg: any) {
     });
   } catch (err) {
     logger.warn('Failed to update processing status:', err);
+  }
+}
+
+// Handle deletion status updates
+function handleDeletionStatusUpdate(msg: any) {
+  try {
+    import('../routes/projects-simple.js').then(module => {
+      if (module.updateDeletionStatus) {
+        module.updateDeletionStatus(
+          msg.jobId,
+          msg.status,
+          msg.progress,
+          msg.message,
+          msg.error
+        );
+      }
+    });
+  } catch (err) {
+    logger.warn('Failed to update deletion status:', err);
   }
 }
 
@@ -223,4 +267,29 @@ export function enqueueIfcConversion(jobData: IfcJobData | ProcessFirstJobData) 
     processQueue();
     return job.id;
   }
+}
+
+export interface ProjectDeletionJobData {
+  jobId: string;
+  projectId: number;
+  userId: string;
+}
+
+interface ProjectDeletionInternalJob extends ProjectDeletionJobData {
+  id: string;
+  type: 'deletion';
+}
+
+export function enqueueDeletion(jobData: ProjectDeletionJobData) {
+  const job: ProjectDeletionInternalJob = {
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    type: 'deletion',
+    ...jobData
+  };
+  PENDING.push(job);
+  logger.info(
+    `📥 Enqueued deletion job for project ${job.projectId} (pending=${PENDING.length}, active=${ACTIVE.size})`
+  );
+  processQueue();
+  return job.id;
 }

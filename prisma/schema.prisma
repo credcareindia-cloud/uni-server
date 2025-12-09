@@ -427,6 +427,28 @@ model UserPanelView {
   @@map("user_panel_views")
 }
 
+// Track async project deletion jobs
+model ProjectDeletion {
+  id          String              @id @default(cuid())
+  projectId   Int                 @map("project_id")
+  projectName String              @map("project_name")
+  status      ProjectDeletionStatus @default(PENDING)
+  progress    Int                 @default(0) // 0-100
+  message     String?             // Current operation message
+  error       String?             // Error message if failed
+  deletedBy   String              @map("deleted_by") // User ID who initiated deletion
+  
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+  completedAt DateTime?           @map("completed_at")
+
+  @@index([projectId])
+  @@index([status])
+  @@index([deletedBy])
+  @@map("project_deletions")
+}
+
+
 // Enums
 enum UserRole {
   VIEWER
@@ -491,5 +513,12 @@ enum NotificationRole {
 enum NotificationStatus {
   PENDING
   SUCCESS
+  FAILED
+}
+
+enum ProjectDeletionStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
   FAILED
 }

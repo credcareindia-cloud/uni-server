@@ -338,8 +338,74 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
   });
 }));
 
+import { enqueueDeletion } from '../queue/index.js';
+
+/**
+ * Update deletion status (called by worker)
+ */
+export async function updateDeletionStatus(
+  jobId: string,
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED',
+  progress: number,
+  message: string,
+  error?: string
+) {
+  try {
+    const updateData: any = {
+      status,
+      progress,
+      message
+    };
+
+    if (error) {
+      updateData.error = error;
+    }
+
+    if (status === 'COMPLETED') {
+      updateData.completedAt = new Date();
+    }
+
+    await prisma.projectDeletion.update({
+      where: { id: jobId },
+      data: updateData
+    });
+
+    logger.info(`Deletion job ${jobId} updated: ${status} (${progress}%) - ${message}`);
+  } catch (err) {
+    logger.error(`Failed to update deletion job ${jobId}:`, err);
+  }
+}
+
+/**
+ * GET /api/projects/deletions/:jobId
+ * Check status of a deletion job
+ */
+router.get('/deletions/:jobId', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { jobId } = req.params;
+
+  const job = await prisma.projectDeletion.findUnique({
+    where: { id: jobId }
+  });
+
+  if (!job) {
+    throw createApiError('Deletion job not found', 404);
+  }
+
+  // Only allow the user who started it or admins to see status
+  if (job.deletedBy !== req.user.id && req.user.role !== 'ADMIN') {
+    throw createApiError('Unauthorized', 403);
+  }
+
+  res.json(job);
+}));
+
 /**
  * DELETE /api/projects/:id/safe-delete
+ * Start async project deletion
  */
 router.delete('/:id/safe-delete', requireProjectRole('MANAGER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -355,179 +421,41 @@ router.delete('/:id/safe-delete', requireProjectRole('MANAGER'), asyncHandler(as
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: {
-      name: true,
-      _count: {
-        select: {
-          panels: true,
-          groups: true,
-          statuses: true,
-          modelHistory: true
-        }
-      }
-    }
+    select: { name: true }
   });
 
   if (!project) {
     throw createApiError('Project not found', 404);
   }
 
-  logger.info(`Starting safe deletion of project: ${project.name} (ID: ${projectId}) by ${req.user.email}`);
-  logger.info(`Project has ${project._count.panels} panels, ${project._count.groups} groups, ${project._count.statuses} statuses, ${project._count.modelHistory} models`);
+  logger.info(`Initiating async deletion for project: ${project.name} (ID: ${projectId}) by ${req.user.email}`);
 
-  const BATCH_SIZE = 200;
-
-  try {
-    // Step 1: Delete panel-status relationships in batches
-    let deletedPanelStatuses = 0;
-    while (true) {
-      const batch = await prisma.panelStatus.findMany({
-        where: { panel: { projectId } },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-
-      if (batch.length === 0) break;
-
-      await prisma.panelStatus.deleteMany({
-        where: { id: { in: batch.map(ps => ps.id) } }
-      });
-
-      deletedPanelStatuses += batch.length;
-      logger.info(`Deleted ${deletedPanelStatuses} panel-status relationships`);
+  // Create deletion job record
+  const job = await prisma.projectDeletion.create({
+    data: {
+      projectId,
+      projectName: project.name,
+      status: 'PENDING',
+      progress: 0,
+      message: 'Queued for deletion',
+      deletedBy: req.user.id
     }
+  });
 
-    // Step 2: Delete panel-group relationships in batches
-    let deletedPanelGroups = 0;
-    while (true) {
-      const batch = await prisma.panelGroup.findMany({
-        where: { panel: { projectId } },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
+  // Enqueue the job
+  enqueueDeletion({
+    jobId: job.id,
+    projectId,
+    userId: req.user.id
+  });
 
-      if (batch.length === 0) break;
-
-      await prisma.panelGroup.deleteMany({
-        where: { id: { in: batch.map(pg => pg.id) } }
-      });
-
-      deletedPanelGroups += batch.length;
-      logger.info(`Deleted ${deletedPanelGroups} panel-group relationships`);
-    }
-
-    // Step 3: Delete status history in batches
-    let deletedStatusHistory = 0;
-    while (true) {
-      const batch = await prisma.statusHistory.findMany({
-        where: { panel: { projectId } },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-
-      if (batch.length === 0) break;
-
-      await prisma.statusHistory.deleteMany({
-        where: { id: { in: batch.map(sh => sh.id) } }
-      });
-
-      deletedStatusHistory += batch.length;
-      logger.info(`Deleted ${deletedStatusHistory} status history records`);
-    }
-
-    // Step 4: Delete panels in batches
-    let deletedPanels = 0;
-    while (true) {
-      const batch = await prisma.panel.findMany({
-        where: { projectId },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-
-      if (batch.length === 0) break;
-
-      await prisma.panel.deleteMany({
-        where: { id: { in: batch.map(p => p.id) } }
-      });
-
-      deletedPanels += batch.length;
-      logger.info(`Deleted ${deletedPanels} panels`);
-    }
-
-    // Step 5: Delete groups (with their panel relationships already deleted)
-    const deletedGroupsResult = await prisma.group.deleteMany({
-      where: { projectId }
-    });
-    logger.info(`Deleted ${deletedGroupsResult.count} groups`);
-
-    // Step 6: Delete statuses (with their panel relationships already deleted)
-    const deletedStatusesResult = await prisma.status.deleteMany({
-      where: { projectId }
-    });
-    logger.info(`Deleted ${deletedStatusesResult.count} statuses`);
-
-    // Step 7: Delete model elements in batches
-    let deletedModelElements = 0;
-    const models = await prisma.model.findMany({
-      where: { projectId },
-      select: { id: true }
-    });
-
-    for (const model of models) {
-      while (true) {
-        const batch = await prisma.modelElement.findMany({
-          where: { modelId: model.id },
-          take: BATCH_SIZE,
-          select: { id: true }
-        });
-
-        if (batch.length === 0) break;
-
-        await prisma.modelElement.deleteMany({
-          where: { id: { in: batch.map(me => me.id) } }
-        });
-
-        deletedModelElements += batch.length;
-      }
-    }
-    logger.info(`Deleted ${deletedModelElements} model elements`);
-
-    // Step 8: Delete models
-    const deletedModelsResult = await prisma.model.deleteMany({
-      where: { projectId }
-    });
-    logger.info(`Deleted ${deletedModelsResult.count} models`);
-
-    // Step 9: Delete project members
-    const deletedMembersResult = await prisma.projectMember.deleteMany({
-      where: { projectId }
-    });
-    logger.info(`Deleted ${deletedMembersResult.count} project members`);
-
-    // Step 10: Finally delete the project itself
-    await prisma.project.delete({
-      where: { id: projectId }
-    });
-
-    logger.info(`✅ Successfully deleted project: ${project.name} (ID: ${projectId})`);
-    logger.info(`Summary: ${deletedPanels} panels, ${deletedGroupsResult.count} groups, ${deletedStatusesResult.count} statuses, ${deletedModelsResult.count} models`);
-
-    res.json({
-      message: 'Project deleted successfully',
-      projectId: projectId,
-      summary: {
-        panels: deletedPanels,
-        groups: deletedGroupsResult.count,
-        statuses: deletedStatusesResult.count,
-        models: deletedModelsResult.count,
-        members: deletedMembersResult.count
-      }
-    });
-  } catch (error) {
-    logger.error(`Failed to delete project ${projectId}:`, error);
-    throw createApiError('Failed to delete project. Some data may have been partially deleted.', 500);
-  }
+  res.json({
+    message: 'Project deletion started',
+    jobId: job.id,
+    statusUrl: `/api/projects/deletions/${job.id}`
+  });
 }));
+
 
 /**
  * DELETE /api/projects/:id
