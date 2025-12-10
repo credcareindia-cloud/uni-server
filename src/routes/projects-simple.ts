@@ -456,6 +456,185 @@ router.delete('/:id/safe-delete', requireProjectRole('MANAGER'), asyncHandler(as
   });
 }));
 
+/**
+ * POST /api/projects/:id/force-cleanup
+ * Force cleanup of stuck/zombie projects (ADMIN only)
+ * Uses very small batch sizes and delays to avoid timeouts
+ */
+router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  // Only admins can force cleanup
+  if (req.user.role !== 'ADMIN') {
+    throw createApiError('Only admins can force cleanup projects', 403);
+  }
+
+  const { id } = req.params;
+  const projectId = await resolveProjectId(id);
+
+  if (!projectId) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      name: true,
+      _count: {
+        select: {
+          panels: true,
+          groups: true,
+          statuses: true,
+          modelHistory: true
+        }
+      }
+    }
+  });
+
+  if (!project) {
+    throw createApiError('Project not found', 404);
+  }
+
+  logger.info(`🧹 FORCE CLEANUP initiated for project: ${project.name} (ID: ${projectId}) by ${req.user.email}`);
+  logger.info(`   Panels: ${project._count.panels}, Groups: ${project._count.groups}, Statuses: ${project._count.statuses}, Models: ${project._count.modelHistory}`);
+
+  // Very small batch size for stuck projects
+  const BATCH_SIZE = 10;
+  const DELAY_MS = 100;
+
+  try {
+    let totalDeleted = {
+      panelStatuses: 0,
+      panelGroups: 0,
+      statusHistory: 0,
+      panels: 0,
+      groups: 0,
+      statuses: 0,
+      modelElements: 0,
+      models: 0,
+      members: 0
+    };
+
+    // Delete panel-status relationships
+    while (true) {
+      const batch = await prisma.panelStatus.findMany({
+        where: { panel: { projectId } },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+      if (batch.length === 0) break;
+      await prisma.panelStatus.deleteMany({ where: { id: { in: batch.map(ps => ps.id) } } });
+      totalDeleted.panelStatuses += batch.length;
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+
+    // Delete panel-group relationships
+    while (true) {
+      const batch = await prisma.panelGroup.findMany({
+        where: { panel: { projectId } },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+      if (batch.length === 0) break;
+      await prisma.panelGroup.deleteMany({ where: { id: { in: batch.map(pg => pg.id) } } });
+      totalDeleted.panelGroups += batch.length;
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+
+    // Delete status history
+    while (true) {
+      const batch = await prisma.statusHistory.findMany({
+        where: { panel: { projectId } },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+      if (batch.length === 0) break;
+      await prisma.statusHistory.deleteMany({ where: { id: { in: batch.map(sh => sh.id) } } });
+      totalDeleted.statusHistory += batch.length;
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+
+    // Delete panels
+    while (true) {
+      const batch = await prisma.panel.findMany({
+        where: { projectId },
+        take: BATCH_SIZE,
+        select: { id: true }
+      });
+      if (batch.length === 0) break;
+      await prisma.panel.deleteMany({ where: { id: { in: batch.map(p => p.id) } } });
+      totalDeleted.panels += batch.length;
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+
+    // Delete groups and statuses
+    const deletedGroups = await prisma.group.deleteMany({ where: { projectId } });
+    totalDeleted.groups = deletedGroups.count;
+    const deletedStatuses = await prisma.status.deleteMany({ where: { projectId } });
+    totalDeleted.statuses = deletedStatuses.count;
+
+    // Delete model elements (the problematic part)
+    const models = await prisma.model.findMany({
+      where: { projectId },
+      select: { id: true }
+    });
+
+    logger.info(`   Deleting model elements from ${models.length} models...`);
+    for (const model of models) {
+      let modelElementCount = 0;
+      while (true) {
+        const batch = await prisma.modelElement.findMany({
+          where: { modelId: model.id },
+          take: BATCH_SIZE,
+          select: { id: true }
+        });
+        if (batch.length === 0) break;
+
+        await prisma.modelElement.deleteMany({
+          where: { id: { in: batch.map(me => me.id) } }
+        });
+
+        modelElementCount += batch.length;
+        totalDeleted.modelElements += batch.length;
+
+        if (totalDeleted.modelElements % 100 === 0) {
+          logger.info(`   Deleted ${totalDeleted.modelElements} model elements...`);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+      }
+    }
+
+    // Delete models
+    const deletedModels = await prisma.model.deleteMany({ where: { projectId } });
+    totalDeleted.models = deletedModels.count;
+
+    // Delete project members
+    const deletedMembers = await prisma.projectMember.deleteMany({ where: { projectId } });
+    totalDeleted.members = deletedMembers.count;
+
+    // Delete the project
+    await prisma.project.delete({ where: { id: projectId } });
+
+    // Clean up any failed deletion jobs
+    await prisma.projectDeletion.deleteMany({ where: { projectId } });
+
+    logger.info(`✅ FORCE CLEANUP completed for project ${projectId}`);
+    logger.info(`   Summary: ${JSON.stringify(totalDeleted)}`);
+
+    res.json({
+      message: 'Project force cleanup completed successfully',
+      projectId,
+      deleted: totalDeleted
+    });
+
+  } catch (error) {
+    logger.error(`❌ Force cleanup failed for project ${projectId}:`, error);
+    throw createApiError('Force cleanup failed', 500);
+  }
+}));
 
 /**
  * DELETE /api/projects/:id
