@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
-console.log('🔄 Loading QR Code Routes...');
+
 
 /**
  * POST /api/qr-codes/generate
@@ -92,9 +93,9 @@ router.post('/generate', authenticateToken, async (req: Request, res: Response) 
                 }
             });
 
-            console.log(`✅ Created new QR code for panel ${targetPanelId}: ${qrCode.id}`);
+            logger.debug('Created new QR code', { panelId: targetPanelId, qrCodeId: qrCode.id });
         } else {
-            console.log(`♻️ Retrieved existing QR code for panel ${targetPanelId}: ${qrCode.id}`);
+            logger.debug('Retrieved existing QR code', { panelId: targetPanelId, qrCodeId: qrCode.id });
         }
 
         return res.status(200).json({
@@ -261,7 +262,7 @@ router.get('/:qrCodeId', async (req: Request, res: Response) => {
             data: { scanCount: { increment: 1 } }
         });
 
-        console.log(`📱 QR code scanned: ${qrCode.id} | Panel: ${qrCode.panelId} | IP: ${ipAddress}`);
+        logger.info('QR code scanned', { qrCodeId: qrCode.id, panelId: qrCode.panelId, ipAddress });
 
         // Get panel details to find the correct ID for redirection (frontend expects local ID/express ID)
         const panel = await prisma.panel.findUnique({

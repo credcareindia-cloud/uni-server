@@ -1,6 +1,7 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -353,9 +354,9 @@ router.get('/:projectId', async (req, res) => {
 router.post('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
-    console.log('📥 Received request body:', req.body);
+    logger.debug('Received create status request', { body: req.body });
     const { name, icon, color, description } = req.body;
-    console.log('📝 Extracted name:', name, 'icon:', icon, 'color:', color);
+    logger.debug('Extracted status fields', { name, icon, color });
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Status name is required' });
@@ -508,10 +509,9 @@ router.get('/history/:panelId', async (req, res) => {
       const lastViewedCount = userPanelView?.lastViewedCount || 0;
       unreadCount = Math.max(0, totalCount - lastViewedCount);
 
-      console.log(`🔔 Backend Badge Calc: User ${userId}, Panel ${panelId}`);
-      console.log(`🔔 Total: ${totalCount}, LastViewed: ${lastViewedCount}, Unread: ${unreadCount}`);
+      logger.debug('Badge calculation', { userId, panelId, totalCount, lastViewedCount, unreadCount });
     } else {
-      console.log('🔔 Backend Badge Calc: No User ID found in request');
+      logger.debug('Badge calculation: No user ID in request');
     }
 
     res.json({ history: historyWithStatus, allStatuses, unreadCount });

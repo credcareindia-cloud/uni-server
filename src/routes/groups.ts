@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { PrismaClient, GroupStatus } from '@prisma/client';
 import { z } from 'zod';
 import { authenticateToken } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -263,7 +264,7 @@ router.get('/:projectId/:groupId/panels', async (req, res) => {
 router.post('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
-    console.log('📦 Received create group request body:', req.body);
+    logger.debug('Received create group request', { body: req.body });
     const validatedData = createGroupSchema.parse(req.body);
 
     const group = await prisma.group.create({

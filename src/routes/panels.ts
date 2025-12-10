@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticateToken } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -106,7 +107,7 @@ router.get('/:projectId/filter-data', async (req, res) => {
       }
     });
 
-    console.log(`✅ Fetched ${panels.length} panels (filter data only) for project ${projectId}`);
+    logger.debug('Fetched panel filter data', { count: panels.length, projectId });
 
     res.json({
       panels,
@@ -180,7 +181,7 @@ router.get('/:projectId/filter-by-type', async (req, res) => {
       where: whereCondition
     });
 
-    console.log(`✅ Fetched ${panels.length} of ${total} panels filtered by types: ${types.join(', ')}`);
+    logger.debug('Fetched filtered panels', { count: panels.length, total, types: types.join(', ') });
 
     res.json({
       panels,
@@ -266,7 +267,7 @@ router.get('/:projectId/all', async (req, res) => {
       ],
     });
 
-    console.log(`✅ Fetched ${panels.length} panels for project ${projectId} (no pagination)`);
+    logger.debug('Fetched all panels', { count: panels.length, projectId });
 
     res.json({
       panels,

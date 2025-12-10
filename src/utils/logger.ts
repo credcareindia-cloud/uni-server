@@ -25,7 +25,10 @@ class Logger {
   }
 
   private getLogLevel(): number {
-    const level = process.env.LOG_LEVEL?.toUpperCase() || 'INFO';
+    // In production, default to WARN to reduce CloudWatch costs
+    // In development, use INFO for better debugging
+    const defaultLevel = process.env.NODE_ENV === 'production' ? 'WARN' : 'INFO';
+    const level = process.env.LOG_LEVEL?.toUpperCase() || defaultLevel;
     return LOG_LEVELS[level as keyof LogLevel] ?? LOG_LEVELS.INFO;
   }
 
@@ -35,7 +38,7 @@ class Logger {
       if (!existsSync(logsDir)) {
         mkdirSync(logsDir, { recursive: true });
       }
-      
+
       const logFile = join(logsDir, `app-${new Date().toISOString().split('T')[0]}.log`);
       this.logStream = createWriteStream(logFile, { flags: 'a' });
     }
@@ -51,7 +54,7 @@ class Logger {
     if (LOG_LEVELS[level] > this.logLevel) return;
 
     const formattedMessage = this.formatMessage(level, message, meta);
-    
+
     // Console output with colors
     if (process.env.NODE_ENV !== 'production') {
       const colors = {
