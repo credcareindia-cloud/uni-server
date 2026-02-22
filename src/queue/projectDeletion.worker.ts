@@ -153,11 +153,24 @@ async function deleteProject() {
                 WHERE "model_id" = ${modelId}
             `;
 
-            // Step B: Fast raw SQL delete by model_id (uses model_elements.model_id index)
-            const deleted = await prisma.$executeRaw`
-                DELETE FROM "model_elements" WHERE "model_id" = ${modelId}
-            `;
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${deleted} elements`);
+            // Step B: Fast raw SQL delete by model_id in chunks
+            // Deleting 40k+ rows in a single query can hit RDS statement timeouts.
+            // We use a ctid-based fast chunk deletion loop (5,000 per query) until empty.
+            let totalDeleted = 0;
+            while (true) {
+                const deletedChunk = await prisma.$executeRaw`
+                    DELETE FROM "model_elements"
+                    WHERE "id" IN (
+                        SELECT "id" FROM "model_elements"
+                        WHERE "model_id" = ${modelId}
+                        LIMIT 5000
+                    )
+                `;
+                totalDeleted += deletedChunk;
+                if (deletedChunk < 5000) break;
+                await sleep(50); // Small pause for DB connection pool
+            }
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${totalDeleted} elements`);
 
             // Clear currentModelId on project if it points to this model
             await prisma.$executeRaw`
