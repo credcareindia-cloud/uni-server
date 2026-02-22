@@ -28,26 +28,26 @@ model Organization {
 }
 
 model User {
-  id             String    @id @default(cuid())
-  email          String    @unique
-  passwordHash   String    @map("password_hash")
+  id             String   @id @default(cuid())
+  email          String   @unique
+  passwordHash   String   @map("password_hash")
   name           String
-  role           UserRole  @default(ADMIN)
-  organizationId String    @map("organization_id")
-  createdBy      String?   @map("created_by")
+  role           UserRole @default(ADMIN)
+  organizationId String   @map("organization_id")
+  createdBy      String?  @map("created_by")
   avatar         String?
   phone          String?
   location       String?
   company        String?
-  userRole       String?   @map("user_role")
+  userRole       String?  @map("user_role")
   lastLogin      DateTime? @map("last_login")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   // Relations
-  organization           Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  creator                User?           @relation("UserCreator", fields: [createdBy], references: [id], onDelete: SetNull)
-  createdUsers           User[]          @relation("UserCreator")
+  organization           Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator                User?            @relation("UserCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdUsers           User[]           @relation("UserCreator")
   projects               Project[]
   notifications          Notification[]
   sessions               Session[]
@@ -91,14 +91,14 @@ model Project {
   metadata Json? // Flexible project metadata
 
   // Relations
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  owner        User            @relation(fields: [createdBy], references: [id])
-  currentModel Model?          @relation("ProjectCurrentModel", fields: [currentModelId], references: [id])
-  modelHistory Model[]         @relation("ProjectModelHistory")
-  groups       Group[]
-  panels       Panel[] // Panels in this project
-  statuses     Status[] // Custom statuses for this project
-  members      ProjectMember[] // Project members and roles
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner         User           @relation(fields: [createdBy], references: [id])
+  currentModel  Model?         @relation("ProjectCurrentModel", fields: [currentModelId], references: [id])
+  modelHistory  Model[]        @relation("ProjectModelHistory")
+  groups        Group[]
+  panels        Panel[]        // Panels in this project
+  statuses      Status[]       // Custom statuses for this project
+  members       ProjectMember[] // Project members and roles
 
   @@unique([organizationId, displayNumber])
   @@index([organizationId])
@@ -113,37 +113,37 @@ model Model {
   type             ModelType   @default(FRAG)
   sizeBytes        BigInt      @map("size_bytes")
   status           ModelStatus @default(READY) // FRAG files are instantly ready for viewing!
-
+  
   // Multi-file project support
-  category       ModelCategory @default(OTHER) // Building component category
-  displayName    String?       @map("display_name") // User-friendly name for the component
-  isMultiFile    Boolean       @default(false) @map("is_multi_file") // Part of multi-file project
-  multiFileJobId String?       @map("multi_file_job_id") // Reference to multi-file processing job
-  fileIndex      Int?          @map("file_index") // Order within multi-file project
-
+  category         ModelCategory @default(OTHER) // Building component category
+  displayName      String?       @map("display_name") // User-friendly name for the component
+  isMultiFile      Boolean       @default(false) @map("is_multi_file") // Part of multi-file project
+  multiFileJobId   String?       @map("multi_file_job_id") // Reference to multi-file processing job
+  fileIndex        Int?          @map("file_index") // Order within multi-file project
+  
   // Version information
-  version      Int     @default(1) // Model version number
-  isActive     Boolean @default(true) @map("is_active") // Is this the current active version?
-  replacedById String? @unique @map("replaced_by_id") // ID of the model that replaced this one
-
+  version          Int         @default(1) // Model version number
+  isActive         Boolean     @default(true) @map("is_active") // Is this the current active version?
+  replacedById     String?     @unique @map("replaced_by_id") // ID of the model that replaced this one
+  
   // FRAG files don't need processing - they're ready immediately!
   processingProgress Int?    @default(100) @map("processing_progress") // Always 100% for FRAG
-  errorMessage       String? @map("error_message")
-
+  errorMessage      String? @map("error_message")
+  
   // FRAG Metadata (for 3D viewer integration)
   elementCount     Int?  @map("element_count") // Can be extracted from FRAG if needed
   spatialStructure Json? @map("spatial_structure") // Building hierarchy from FRAG
-
+  
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project        Project        @relation("ProjectModelHistory", fields: [projectId], references: [id], onDelete: Cascade)
-  currentProject Project?       @relation("ProjectCurrentModel") // If this is the current active model
-  replacedBy     Model?         @relation("ModelReplacement", fields: [replacedById], references: [id])
-  replaces       Model?         @relation("ModelReplacement")
-  elements       ModelElement[]
-  panels         Panel[] // Panels linked to this model
+  project         Project        @relation("ProjectModelHistory", fields: [projectId], references: [id], onDelete: Cascade)
+  currentProject  Project?       @relation("ProjectCurrentModel") // If this is the current active model
+  replacedBy      Model?         @relation("ModelReplacement", fields: [replacedById], references: [id])
+  replaces        Model?         @relation("ModelReplacement")
+  elements        ModelElement[]
+  panels          Panel[]        // Panels linked to this model
 
   @@map("models")
 }
@@ -152,19 +152,19 @@ model ModelElement {
   id        String @id @default(cuid())
   modelId   String @map("model_id")
   expressId Int    @map("express_id") // IFC Express ID
-  globalId  String @map("global_id") // IFC GlobalId
-  ifcType   String @map("ifc_type") // IfcWall, IfcDoor, etc.
-
+  globalId  String @map("global_id")  // IFC GlobalId
+  ifcType   String @map("ifc_type")   // IfcWall, IfcDoor, etc.
+  
   // Spatial context
   storey String? // Building storey
   space  String? // Space/room
-
+  
   // Geometry (bounding box)
   bbox Json? // {min: [x,y,z], max: [x,y,z]}
-
+  
   // Properties (flexible JSONB for all IFC properties)
   properties Json? // All Psets, Qtos, and basic properties
-
+  
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
@@ -184,16 +184,16 @@ model Group {
   description String?
   status      GroupStatus @default(PENDING)
   color       String      @default("#3B82F6") // Group color for visual distinction
-
+  
   // Group metadata
   elementIds Json? @map("element_ids") // Array of element IDs in this group
   metadata   Json? // Flexible group metadata
-
+  
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   panelGroups PanelGroup[] // Many-to-many relation
 
   @@index([projectId])
@@ -219,49 +219,48 @@ model ProjectMember {
 
 // Panel Management Models
 model Panel {
-  id        String  @id @default(cuid())
-  projectId Int     @map("project_id")
-  modelId   String? @map("model_id") // Optional link to model
-  elementId String? @map("element_id") // Optional link to model element
-
+  id          String      @id @default(cuid())
+  projectId   Int         @map("project_id")
+  modelId     String?     @map("model_id") // Optional link to model
+  elementId   String?     @map("element_id") // Optional link to model element
+  
   // Panel identification
-  name       String // Panel name/identifier
-  tag        String? // Panel tag/code
-  objectType String? @map("object_type") // Type of panel (Concrete, Steel, etc.)
-
+  name        String      // Panel name/identifier
+  tag         String?     // Panel tag/code
+  objectType  String?     @map("object_type") // Type of panel (Concrete, Steel, etc.)
+  
   // Panel properties
-  dimensions String? // Panel dimensions
-  location   String? // Panel location
-  material   String? // Panel material
-  weight     Float? // Panel weight
-  area       Float? // Panel area
-
+  dimensions  String?     // Panel dimensions
+  location    String?     // Panel location
+  material    String?     // Panel material
+  weight      Float?      // Panel weight
+  area        Float?      // Panel area
+  
   // Multi-status and multi-group assignment (no single status/group anymore)
   // Legacy fields removed - all panels use many-to-many relations
-
+  
   // Manufacturing and logistics
-  productionDate   DateTime? @map("production_date")
-  shippingDate     DateTime? @map("shipping_date")
-  installationDate DateTime? @map("installation_date")
-
+  productionDate    DateTime? @map("production_date")
+  shippingDate      DateTime? @map("shipping_date")
+  installationDate  DateTime? @map("installation_date")
+  
   // Additional metadata
-  notes    String? // Panel notes
-  metadata Json? // Flexible panel metadata
-
+  notes       String?     // Panel notes
+  metadata    Json?       // Flexible panel metadata
+  
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  model         Model?          @relation(fields: [modelId], references: [id], onDelete: SetNull)
-  element       ModelElement?   @relation(fields: [elementId], references: [id], onDelete: SetNull)
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  model         Model?        @relation(fields: [modelId], references: [id])
+  element       ModelElement? @relation(fields: [elementId], references: [id])
   statuses      PanelStatus[] // Many-to-many: Multiple statuses per panel
-  groups        PanelGroup[] // Many-to-many: Multiple groups per panel
+  groups        PanelGroup[]  // Many-to-many: Multiple groups per panel
   statusHistory StatusHistory[]
-
+  
   @@index([projectId])
   @@index([modelId])
-  @@index([elementId])
   @@map("panels")
 }
 
@@ -278,7 +277,7 @@ model Status {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   panelStatuses PanelStatus[] // Many-to-many relation
 
   @@index([projectId])
@@ -325,13 +324,13 @@ model PanelGroup {
 }
 
 model StatusHistory {
-  id        String  @id @default(cuid())
-  panelId   String  @map("panel_id")
-  statusId  String  @map("status_id")
-  action    String // "ASSIGNED" or "REMOVED"
-  notes     String? // Notes about status change
-  changedBy String? @map("changed_by") // User who changed the status
-
+  id        String   @id @default(cuid())
+  panelId   String   @map("panel_id")
+  statusId  String   @map("status_id")
+  action    String   // "ASSIGNED" or "REMOVED"
+  notes     String?  // Notes about status change
+  changedBy String?  @map("changed_by") // User who changed the status
+  
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
@@ -344,19 +343,19 @@ model StatusHistory {
 }
 
 model Notification {
-  id             String             @id @default(cuid())
-  userId         String             @map("user_id")
-  organizationId String             @map("organization_id")
-  type           NotificationType
-  title          String
-  message        String
-  read           Boolean            @default(false)
-  status         NotificationStatus @default(PENDING) @map("status")
-  recipientRole  NotificationRole   @default(ADMIN) @map("recipient_role")
-
+  id              String                 @id @default(cuid())
+  userId          String                 @map("user_id")
+  organizationId  String                 @map("organization_id")
+  type            NotificationType
+  title           String
+  message         String
+  read            Boolean                @default(false)
+  status          NotificationStatus     @default(PENDING) @map("status")
+  recipientRole   NotificationRole       @default(ADMIN) @map("recipient_role")
+  
   // Optional metadata
   metadata Json? // Additional notification data
-
+  
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
@@ -370,17 +369,17 @@ model Notification {
 
 // QR Code Management Models
 model QRCode {
-  id        String @id @default(cuid())
-  panelId   String @map("panel_id")
-  projectId Int    @map("project_id")
-
+  id         String    @id @default(cuid())
+  panelId    String    @map("panel_id")
+  projectId  Int       @map("project_id")
+  
   // QR Code lifecycle
-  isActive  Boolean   @default(true) @map("is_active")
-  expiresAt DateTime? @map("expires_at") // Optional expiration
-  scanCount Int       @default(0) @map("scan_count")
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  isActive   Boolean   @default(true) @map("is_active")
+  expiresAt  DateTime? @map("expires_at") // Optional expiration
+  scanCount  Int       @default(0) @map("scan_count")
+  
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
 
   // Relations
   scans QRScan[]
@@ -392,13 +391,13 @@ model QRCode {
 }
 
 model QRScan {
-  id       String @id @default(cuid())
-  qrCodeId String @map("qr_code_id")
-
+  id         String   @id @default(cuid())
+  qrCodeId   String   @map("qr_code_id")
+  
   // Scan metadata
-  scannedAt DateTime @default(now()) @map("scanned_at")
-  userAgent String?  @map("user_agent")
-  ipAddress String?  @map("ip_address")
+  scannedAt  DateTime @default(now()) @map("scanned_at")
+  userAgent  String?  @map("user_agent")
+  ipAddress  String?  @map("ip_address")
 
   // Relations
   qrCode QRCode @relation(fields: [qrCodeId], references: [id], onDelete: Cascade)
@@ -410,14 +409,14 @@ model QRScan {
 
 // Track which submissions each user has viewed for notification badges
 model UserPanelView {
-  id              String   @id @default(cuid())
-  userId          String   @map("user_id")
-  panelId         String   @map("panel_id")
-  lastViewedAt    DateTime @default(now()) @map("last_viewed_at")
-  lastViewedCount Int      @default(0) @map("last_viewed_count")
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  panelId           String   @map("panel_id")
+  lastViewedAt      DateTime @default(now()) @map("last_viewed_at")
+  lastViewedCount   Int      @default(0) @map("last_viewed_count") 
+  
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -430,24 +429,25 @@ model UserPanelView {
 
 // Track async project deletion jobs
 model ProjectDeletion {
-  id          String                @id @default(cuid())
-  projectId   Int                   @map("project_id")
-  projectName String                @map("project_name")
+  id          String              @id @default(cuid())
+  projectId   Int                 @map("project_id")
+  projectName String              @map("project_name")
   status      ProjectDeletionStatus @default(PENDING)
-  progress    Int                   @default(0) // 0-100
-  message     String? // Current operation message
-  error       String? // Error message if failed
-  deletedBy   String                @map("deleted_by") // User ID who initiated deletion
-
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
-  completedAt DateTime? @map("completed_at")
+  progress    Int                 @default(0) // 0-100
+  message     String?             // Current operation message
+  error       String?             // Error message if failed
+  deletedBy   String              @map("deleted_by") // User ID who initiated deletion
+  
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+  completedAt DateTime?           @map("completed_at")
 
   @@index([projectId])
   @@index([status])
   @@index([deletedBy])
   @@map("project_deletions")
 }
+
 
 // Enums
 enum UserRole {
@@ -471,14 +471,14 @@ enum ProjectStatus {
 }
 
 enum ModelType {
-  FRAG
+  FRAG 
 }
 
 enum ModelCategory {
-  STRUCTURE
-  MEP
-  ELECTRICAL
-  OTHER
+  STRUCTURE   
+  MEP         
+  ELECTRICAL 
+  OTHER       
 }
 
 enum ModelStatus {

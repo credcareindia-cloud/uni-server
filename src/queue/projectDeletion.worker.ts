@@ -1,15 +1,8 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { PrismaClient } from '@prisma/client';
 
-// Initialize a dedicated, isolated Prisma Client for the worker
-// This prevents the heavy deletion locks from exhausting the main server's connection pool
-const prisma = new PrismaClient({
-    datasources: {
-        db: {
-            url: process.env.DATABASE_URL + '?connection_limit=2',
-        },
-    }
-});
+// Initialize Prisma Client
+const prisma = new PrismaClient();
 
 interface DeletionWorkerData {
     jobId: string;
@@ -129,31 +122,9 @@ async function deleteProject() {
         updateStepProgress('Deleting statuses...');
         await prisma.status.deleteMany({ where: { projectId } });
 
-        // Step 7: Delete model elements in chunks
-        // Even with onDelete: Cascade, deleting a model with 10k+ elements in one query can cause
-        // a Prisma 30s Socket Timeout on remote databases. We manually chunk it here.
-        updateStepProgress('Deleting 3D model elements...');
-        let deletedModelElements = 0;
-        for (const modelId of modelIds) {
-            const elements = await prisma.modelElement.findMany({
-                where: { modelId: modelId },
-                select: { id: true }
-            });
-            const elementIds = elements.map(e => e.id);
-
-            // Chunk size of 1000 is safe and fast
-            for (let i = 0; i < elementIds.length; i += 1000) {
-                const batch = elementIds.slice(i, i + 1000);
-                await prisma.modelElement.deleteMany({
-                    where: { id: { in: batch } }
-                });
-                
-                deletedModelElements += batch.length;
-                if (deletedModelElements % 2000 === 0) {
-                    sendUpdate('IN_PROGRESS', 70, `Deleting model elements (${deletedModelElements} deleted)...`);
-                }
-            }
-        }
+        // Note: Model elements will be automatically deleted when their parent model is deleted
+        // due to Prisma's `onDelete: Cascade` relation on ModelElement -> Model.
+        // We do not need to manually delete them here.
 
         // Step 8: Delete models
         updateStepProgress('Deleting models...');
