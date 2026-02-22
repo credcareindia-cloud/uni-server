@@ -28,7 +28,7 @@ const sendUpdate = (status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED', progress: nu
 
 async function deleteProject() {
     const { jobId, projectId, userId } = data;
-    const BATCH_SIZE = 50;
+    const BATCH_SIZE = 500;
 
     try {
         sendUpdate('IN_PROGRESS', 0, 'Starting project deletion...');
@@ -82,17 +82,16 @@ async function deleteProject() {
         });
         const modelIds = models.map(m => m.id);
 
-        // Helper to process in chunks
-        async function deleteInBatches(ids: string[], deleteFn: (batchIds: string[]) => Promise<any>, label: string) {
+        const deleteInBatches = async (ids: string[], deleteFn: (batchIds: string[]) => Promise<any>, label: string) => {
             for (let i = 0; i < ids.length; i += BATCH_SIZE) {
                 const batch = ids.slice(i, i + BATCH_SIZE);
                 await deleteFn(batch);
                 if (i % 500 === 0 && i > 0) {
                     sendUpdate('IN_PROGRESS', 40, `Deleting ${label} (${i}/${ids.length})...`);
                 }
-                await sleep(50); // Give database breathing room
+                await sleep(10); // Give database breathing room
             }
-        }
+        };
 
         // Step 2: Delete QR Codes and UserPanelViews (these don't have Prisma relations set up so no automatic cascade)
         updateStepProgress('Deleting orphaned QR codes and views...');
@@ -127,17 +126,14 @@ async function deleteProject() {
         updateStepProgress('Deleting 3D model elements...');
         let deletedModelElements = 0;
         for (const modelId of modelIds) {
-            // We can't query all element IDs at once easily if there are hundreds of thousands, 
-            // but we can query them in chunks using cursor or just offset.
-            // Actually, querying just the IDs by modelId is relatively fast.
             const elements = await prisma.modelElement.findMany({
                 where: { modelId: modelId },
                 select: { id: true }
             });
             const elementIds = elements.map(e => e.id);
 
-            for (let i = 0; i < elementIds.length; i += BATCH_SIZE * 2) {
-                const batch = elementIds.slice(i, i + BATCH_SIZE * 2);
+            for (let i = 0; i < elementIds.length; i += 2000) {
+                const batch = elementIds.slice(i, i + 2000);
                 await prisma.modelElement.deleteMany({
                     where: { id: { in: batch } }
                 });
@@ -146,7 +142,7 @@ async function deleteProject() {
                 if (deletedModelElements % 1000 === 0) {
                     sendUpdate('IN_PROGRESS', 70, `Deleting model elements (${deletedModelElements} deleted)...`);
                 }
-                await sleep(30);
+                await sleep(10);
             }
         }
 

@@ -500,9 +500,9 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
   logger.info(`🧹 FORCE CLEANUP initiated for project: ${project.name} (ID: ${projectId}) by ${req.user.email}`);
   logger.info(`   Panels: ${project._count.panels}, Groups: ${project._count.groups}, Statuses: ${project._count.statuses}, Models: ${project._count.modelHistory}`);
 
-  // Very small batch size for stuck projects
-  const BATCH_SIZE = 10;
-  const DELAY_MS = 100;
+  // Larger batch size to speed up deletion
+  const BATCH_SIZE = 500;
+  const DELAY_MS = 10;
 
   try {
     let totalDeleted = {
@@ -531,14 +531,14 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
     const modelIds = modelsQuery.map(m => m.id);
 
     // Helper to process in chunks
-    async function deleteInBatches(ids: string[], deleteFn: (batchIds: string[]) => Promise<any>, counterKey: keyof typeof totalDeleted) {
-        for (let i = 0; i < ids.length; i += BATCH_SIZE * 5) {
-            const batch = ids.slice(i, i + BATCH_SIZE * 5);
+    const deleteInBatches = async (ids: string[], deleteFn: (batchIds: string[]) => Promise<any>, counterKey: keyof typeof totalDeleted) => {
+        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+            const batch = ids.slice(i, i + BATCH_SIZE);
             const result = await deleteFn(batch);
             totalDeleted[counterKey] += batch.length;
             await new Promise(resolve => setTimeout(resolve, DELAY_MS));
         }
-    }
+    };
 
     // Delete QRCodes & UserPanelViews
     await prisma.qRCode.deleteMany({ where: { projectId } }).catch(() => {});
@@ -572,8 +572,8 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
       });
       const elementIds = elements.map(e => e.id);
 
-      for (let i = 0; i < elementIds.length; i += BATCH_SIZE * 10) {
-        const batch = elementIds.slice(i, i + BATCH_SIZE * 10);
+      for (let i = 0; i < elementIds.length; i += 2000) {
+        const batch = elementIds.slice(i, i + 2000);
         await prisma.modelElement.deleteMany({
           where: { id: { in: batch } }
         });
