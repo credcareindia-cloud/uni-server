@@ -114,9 +114,9 @@ async function deleteProject() {
         sendUpdate('IN_PROGRESS', 20, 'Deleting panel assignments (statuses, groups, history)...');
         if (panelIds.length > 0) {
             await deleteInChunks(panelIds, async (batch) => {
-                await prisma.$executeRaw`DELETE FROM "panel_statuses" WHERE "panel_id" = ANY(${batch}::text[])`;
-                await prisma.$executeRaw`DELETE FROM "panel_groups" WHERE "panel_id" = ANY(${batch}::text[])`;
-                await prisma.$executeRaw`DELETE FROM "status_history" WHERE "panel_id" = ANY(${batch}::text[])`;
+                await prisma.panelStatus.deleteMany({ where: { panelId: { in: batch } } });
+                await prisma.panelGroup.deleteMany({ where: { panelId: { in: batch } } });
+                await prisma.statusHistory.deleteMany({ where: { panelId: { in: batch } } });
             });
         }
 
@@ -124,7 +124,7 @@ async function deleteProject() {
         sendUpdate('IN_PROGRESS', 25, `Deleting ${panelIds.length} panels...`);
         if (panelIds.length > 0) {
             await deleteInChunks(panelIds, async (batch) => {
-                await prisma.$executeRaw`DELETE FROM "panels" WHERE "id" = ANY(${batch}::text[])`;
+                await prisma.panel.deleteMany({ where: { id: { in: batch } } });
             });
         }
 
@@ -157,23 +157,22 @@ async function deleteProject() {
             const elementIds = elementRows.map(e => e.id);
             console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting ${elementIds.length} elements...`);
 
-            // Step C: Delete elements in exact, extremely small chunks of 500
-            // RDS / Prisma connection drops when sending massive arrays or thousands of parameters.
-            // A chunk size of 500 with Prisma.join guarantees safety and bypasses parameter limits.
+            // Step C: Delete elements in exact chunks.
+            // Using Prisma native deleteMany with a small chunk is the safest way to avoid
+            // RDS/Postgres driver P2010 crashes caused by raw SQL parameter serialization limits.
             let totalDeleted = 0;
-            const chunkSize = 500;
+            const chunkSize = 2000;
             
             for (let j = 0; j < elementIds.length; j += chunkSize) {
                 const chunk = elementIds.slice(j, j + chunkSize);
                 
-                // Use safe, explicit parameterized list (500 limit is well within Postgres 65k safe limit)
-                const deletedChunk = await prisma.$executeRaw`
-                    DELETE FROM "model_elements"
-                    WHERE "id" IN (${Prisma.join(chunk)})
-                `;
+                // Native Prisma batch delete (safely parameterizes `in:` under the hood)
+                const { count } = await prisma.modelElement.deleteMany({
+                    where: { id: { in: chunk } }
+                });
                 
-                totalDeleted += deletedChunk;
-                if (j % 5000 === 0 && j > 0) {
+                totalDeleted += count;
+                if (j % 4000 === 0 && j > 0) {
                     console.log(`  ... Deleted ${totalDeleted}/${elementIds.length} elements`);
                 }
                 
