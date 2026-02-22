@@ -126,10 +126,15 @@ async function deleteProject() {
         // due to Prisma's `onDelete: Cascade` relation on ModelElement -> Model.
         // We do not need to manually delete them here.
 
-        // Step 8: Delete models
+        // Step 8: Delete models one-by-one to prevent cascade timeout
+        // Deleting all models at once causes a 30s DB timeout because each model
+        // cascades to tens of thousands of ModelElements simultaneously.
         updateStepProgress('Deleting models...');
-        if (modelIds.length > 0) {
-            await prisma.model.deleteMany({ where: { projectId } });
+        for (let i = 0; i < modelIds.length; i++) {
+            const modelId = modelIds[i];
+            await prisma.model.delete({ where: { id: modelId } });
+            sendUpdate('IN_PROGRESS', 70, `Deleted model ${i + 1}/${modelIds.length} (and its elements)...`);
+            await sleep(100); // Give DB breathing room between cascade deletes
         }
 
         // Step 9: Delete project members
