@@ -114,9 +114,9 @@ async function deleteProject() {
         sendUpdate('IN_PROGRESS', 20, 'Deleting panel assignments (statuses, groups, history)...');
         if (panelIds.length > 0) {
             await deleteInChunks(panelIds, async (batch) => {
-                await prisma.panelStatus.deleteMany({ where: { panelId: { in: batch } } });
-                await prisma.panelGroup.deleteMany({ where: { panelId: { in: batch } } });
-                await prisma.statusHistory.deleteMany({ where: { panelId: { in: batch } } });
+                await prisma.$executeRaw`DELETE FROM "panel_statuses" WHERE "panel_id" = ANY(${batch}::text[])`;
+                await prisma.$executeRaw`DELETE FROM "panel_groups" WHERE "panel_id" = ANY(${batch}::text[])`;
+                await prisma.$executeRaw`DELETE FROM "status_history" WHERE "panel_id" = ANY(${batch}::text[])`;
             });
         }
 
@@ -124,7 +124,7 @@ async function deleteProject() {
         sendUpdate('IN_PROGRESS', 25, `Deleting ${panelIds.length} panels...`);
         if (panelIds.length > 0) {
             await deleteInChunks(panelIds, async (batch) => {
-                await prisma.panel.deleteMany({ where: { id: { in: batch } } });
+                await prisma.$executeRaw`DELETE FROM "panels" WHERE "id" = ANY(${batch}::text[])`;
             });
         }
 
