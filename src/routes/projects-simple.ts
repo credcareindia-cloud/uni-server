@@ -563,9 +563,27 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
     const deletedStatuses = await prisma.status.deleteMany({ where: { projectId } });
     totalDeleted.statuses = deletedStatuses.count;
 
-    // Note: Model elements will be automatically deleted when their parent model is deleted
-    // due to Prisma's `onDelete: Cascade` relation on ModelElement -> Model.
-    // We do not need to manually delete them here.
+    // Delete model elements in chunks first to avoid 30s Socket Timeout on large models
+    logger.info(`   Deleting model elements from ${modelIds.length} models...`);
+    for (const modelId of modelIds) {
+      const elements = await prisma.modelElement.findMany({
+        where: { modelId: modelId },
+        select: { id: true }
+      });
+      const elementIds = elements.map(e => e.id);
+
+      // Chunk size of 1000 is safe and fast
+      for (let i = 0; i < elementIds.length; i += 1000) {
+        const batch = elementIds.slice(i, i + 1000);
+        await prisma.modelElement.deleteMany({
+          where: { id: { in: batch } }
+        });
+        totalDeleted.modelElements += batch.length;
+        if (totalDeleted.modelElements % 2000 === 0) {
+          logger.info(`   Deleted ${totalDeleted.modelElements} model elements...`);
+        }
+      }
+    }
 
     // Delete models
     if (modelIds.length > 0) {
