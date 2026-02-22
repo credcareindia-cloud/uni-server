@@ -253,8 +253,8 @@ model Panel {
 
   // Relations
   project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  model         Model?        @relation(fields: [modelId], references: [id])
-  element       ModelElement? @relation(fields: [elementId], references: [id])
+  model         Model?        @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  element       ModelElement? @relation(fields: [elementId], references: [id], onDelete: SetNull)
   statuses      PanelStatus[] // Many-to-many: Multiple statuses per panel
   groups        PanelGroup[]  // Many-to-many: Multiple groups per panel
   statusHistory StatusHistory[]

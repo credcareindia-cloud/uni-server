@@ -1,0 +1,1 @@
+-- This migration was accidentally left empty. It ensures migration history is unblocked.
