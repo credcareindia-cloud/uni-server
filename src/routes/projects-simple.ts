@@ -517,56 +517,44 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
       members: 0
     };
 
-    // Delete panel-status relationships
-    while (true) {
-      const batch = await prisma.panelStatus.findMany({
-        where: { panel: { projectId } },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-      if (batch.length === 0) break;
-      await prisma.panelStatus.deleteMany({ where: { id: { in: batch.map(ps => ps.id) } } });
-      totalDeleted.panelStatuses += batch.length;
-      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    // Step 1: Query all Panel IDs and Model IDs upfront
+    const panels = await prisma.panel.findMany({
+      where: { projectId },
+      select: { id: true }
+    });
+    const panelIds = panels.map(p => p.id);
+
+    const modelsQuery = await prisma.model.findMany({
+      where: { projectId },
+      select: { id: true }
+    });
+    const modelIds = modelsQuery.map(m => m.id);
+
+    // Helper to process in chunks
+    async function deleteInBatches(ids: string[], deleteFn: (batchIds: string[]) => Promise<any>, counterKey: keyof typeof totalDeleted) {
+        for (let i = 0; i < ids.length; i += BATCH_SIZE * 5) {
+            const batch = ids.slice(i, i + BATCH_SIZE * 5);
+            const result = await deleteFn(batch);
+            totalDeleted[counterKey] += batch.length;
+            await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+        }
     }
 
-    // Delete panel-group relationships
-    while (true) {
-      const batch = await prisma.panelGroup.findMany({
-        where: { panel: { projectId } },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-      if (batch.length === 0) break;
-      await prisma.panelGroup.deleteMany({ where: { id: { in: batch.map(pg => pg.id) } } });
-      totalDeleted.panelGroups += batch.length;
-      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    // Delete QRCodes & UserPanelViews
+    await prisma.qRCode.deleteMany({ where: { projectId } }).catch(() => {});
+    if (panelIds.length > 0) {
+        let deletedViews = 0;
+        await deleteInBatches(panelIds, async (batchIds) => {
+            const res = await prisma.userPanelView.deleteMany({ where: { panelId: { in: batchIds } } }).catch(() => ({ count: 0 }));
+            if (res) deletedViews += res.count;
+        }, "panelStatuses"); // using existing counter fields or skip counting
     }
 
-    // Delete status history
-    while (true) {
-      const batch = await prisma.statusHistory.findMany({
-        where: { panel: { projectId } },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-      if (batch.length === 0) break;
-      await prisma.statusHistory.deleteMany({ where: { id: { in: batch.map(sh => sh.id) } } });
-      totalDeleted.statusHistory += batch.length;
-      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
-    }
-
-    // Delete panels
-    while (true) {
-      const batch = await prisma.panel.findMany({
-        where: { projectId },
-        take: BATCH_SIZE,
-        select: { id: true }
-      });
-      if (batch.length === 0) break;
-      await prisma.panel.deleteMany({ where: { id: { in: batch.map(p => p.id) } } });
-      totalDeleted.panels += batch.length;
-      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    // Delete panels (cascades automatically for statuses and groups)
+    if (panelIds.length > 0) {
+        await deleteInBatches(panelIds, async (batchIds) => {
+            await prisma.panel.deleteMany({ where: { id: { in: batchIds } } });
+        }, "panels");
     }
 
     // Delete groups and statuses
@@ -575,51 +563,43 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
     const deletedStatuses = await prisma.status.deleteMany({ where: { projectId } });
     totalDeleted.statuses = deletedStatuses.count;
 
-    // Delete model elements (the problematic part)
-    const models = await prisma.model.findMany({
-      where: { projectId },
-      select: { id: true }
-    });
+    // Delete model elements
+    logger.info(`   Deleting model elements from ${modelIds.length} models...`);
+    for (const modelId of modelIds) {
+      const elements = await prisma.modelElement.findMany({
+        where: { modelId: modelId },
+        select: { id: true }
+      });
+      const elementIds = elements.map(e => e.id);
 
-    logger.info(`   Deleting model elements from ${models.length} models...`);
-    for (const model of models) {
-      let modelElementCount = 0;
-      while (true) {
-        const batch = await prisma.modelElement.findMany({
-          where: { modelId: model.id },
-          take: BATCH_SIZE,
-          select: { id: true }
-        });
-        if (batch.length === 0) break;
-
+      for (let i = 0; i < elementIds.length; i += BATCH_SIZE * 10) {
+        const batch = elementIds.slice(i, i + BATCH_SIZE * 10);
         await prisma.modelElement.deleteMany({
-          where: { id: { in: batch.map(me => me.id) } }
+          where: { id: { in: batch } }
         });
-
-        modelElementCount += batch.length;
         totalDeleted.modelElements += batch.length;
-
-        if (totalDeleted.modelElements % 100 === 0) {
+        if (totalDeleted.modelElements % 1000 === 0) {
           logger.info(`   Deleted ${totalDeleted.modelElements} model elements...`);
         }
-
         await new Promise(resolve => setTimeout(resolve, DELAY_MS));
       }
     }
 
     // Delete models
-    const deletedModels = await prisma.model.deleteMany({ where: { projectId } });
-    totalDeleted.models = deletedModels.count;
+    if (modelIds.length > 0) {
+        const deletedModels = await prisma.model.deleteMany({ where: { projectId } });
+        totalDeleted.models = deletedModels.count;
+    }
 
     // Delete project members
     const deletedMembers = await prisma.projectMember.deleteMany({ where: { projectId } });
     totalDeleted.members = deletedMembers.count;
 
+    // Delete deletion jobs except this? No wait, this is force cleanup, delete all jobs
+    await prisma.projectDeletion.deleteMany({ where: { projectId } }).catch(() => {});
+
     // Delete the project
     await prisma.project.delete({ where: { id: projectId } });
-
-    // Clean up any failed deletion jobs
-    await prisma.projectDeletion.deleteMany({ where: { projectId } });
 
     logger.info(`✅ FORCE CLEANUP completed for project ${projectId}`);
     logger.info(`   Summary: ${JSON.stringify(totalDeleted)}`);

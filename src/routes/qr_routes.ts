@@ -84,16 +84,36 @@ router.post('/generate', authenticateToken, async (req: Request, res: Response) 
 
         // If QR code doesn't exist, create a new one
         if (!qrCode) {
-            qrCode = await prisma.qRCode.create({
-                data: {
-                    panelId: targetPanelId,
-                    projectId: parseInt(projectId),
-                    isActive: true,
-                    scanCount: 0
+            try {
+                qrCode = await prisma.qRCode.create({
+                    data: {
+                        panelId: targetPanelId,
+                        projectId: parseInt(projectId),
+                        isActive: true,
+                        scanCount: 0
+                    }
+                });
+                logger.debug('Created new QR code', { panelId: targetPanelId, qrCodeId: qrCode.id });
+            } catch (error: any) {
+                // P2002 is Prisma's error code for a unique constraint violation
+                if (error.code === 'P2002') {
+                    // Another request must have created it between our findUnique and create
+                    qrCode = await prisma.qRCode.findUnique({
+                        where: { panelId: targetPanelId }
+                    });
+                    
+                    if (!qrCode) {
+                        throw error; // Unexpected, throw original error
+                    }
+                    
+                    logger.debug('Retrieved existing QR code (recovered from unique constraint)', { 
+                        panelId: targetPanelId, 
+                        qrCodeId: qrCode.id 
+                    });
+                } else {
+                    throw error;
                 }
-            });
-
-            logger.debug('Created new QR code', { panelId: targetPanelId, qrCodeId: qrCode.id });
+            }
         } else {
             logger.debug('Retrieved existing QR code', { panelId: targetPanelId, qrCodeId: qrCode.id });
         }

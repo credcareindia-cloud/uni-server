@@ -62,63 +62,57 @@ async function deleteProject() {
         const updateStepProgress = (msg: string) => {
             currentStep++;
             const progress = Math.round((currentStep / totalSteps) * 100);
-            sendUpdate('IN_PROGRESS', progress, msg);
+            sendUpdate('IN_PROGRESS', Math.min(progress, 99), msg);
+            console.log(`[Delete Project ${projectId}] Step ${currentStep}/${totalSteps}: ${msg}`);
         };
 
-        // Step 1: Delete panel-status relationships
-        updateStepProgress('Deleting panel status assignments...');
-        while (true) {
-            const batch = await prisma.panelStatus.findMany({
-                where: { panel: { projectId } },
-                take: BATCH_SIZE,
-                select: { id: true }
-            });
-            if (batch.length === 0) break;
-            await prisma.panelStatus.deleteMany({
-                where: { id: { in: batch.map(ps => ps.id) } }
-            });
+        const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+        // Step 1: Query all Panel IDs and Model IDs upfront (Fast & avoids JOINs later)
+        updateStepProgress('Fetching project structure...');
+        const panels = await prisma.panel.findMany({
+            where: { projectId },
+            select: { id: true }
+        });
+        const panelIds = panels.map(p => p.id);
+
+        const models = await prisma.model.findMany({
+            where: { projectId },
+            select: { id: true }
+        });
+        const modelIds = models.map(m => m.id);
+
+        // Helper to process in chunks
+        async function deleteInBatches(ids: string[], deleteFn: (batchIds: string[]) => Promise<any>, label: string) {
+            for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+                const batch = ids.slice(i, i + BATCH_SIZE);
+                await deleteFn(batch);
+                if (i % 500 === 0 && i > 0) {
+                    sendUpdate('IN_PROGRESS', 40, `Deleting ${label} (${i}/${ids.length})...`);
+                }
+                await sleep(50); // Give database breathing room
+            }
         }
 
-        // Step 2: Delete panel-group relationships
-        updateStepProgress('Deleting panel group assignments...');
-        while (true) {
-            const batch = await prisma.panelGroup.findMany({
-                where: { panel: { projectId } },
-                take: BATCH_SIZE,
-                select: { id: true }
-            });
-            if (batch.length === 0) break;
-            await prisma.panelGroup.deleteMany({
-                where: { id: { in: batch.map(pg => pg.id) } }
-            });
+        // Step 2: Delete QR Codes and UserPanelViews (these don't have Prisma relations set up so no automatic cascade)
+        updateStepProgress('Deleting orphaned QR codes and views...');
+        
+        // Delete QRCodes by projectId
+        await prisma.qRCode.deleteMany({ where: { projectId } }).catch(() => {});
+        
+        if (panelIds.length > 0) {
+            // Delete UserPanelViews by panelIds
+            await deleteInBatches(panelIds, async (batchIds) => {
+                await prisma.userPanelView.deleteMany({ where: { panelId: { in: batchIds } } }).catch(() => {});
+            }, "panel views");
         }
 
-        // Step 3: Delete status history
-        updateStepProgress('Deleting status history...');
-        while (true) {
-            const batch = await prisma.statusHistory.findMany({
-                where: { panel: { projectId } },
-                take: BATCH_SIZE,
-                select: { id: true }
-            });
-            if (batch.length === 0) break;
-            await prisma.statusHistory.deleteMany({
-                where: { id: { in: batch.map(sh => sh.id) } }
-            });
-        }
-
-        // Step 4: Delete panels
-        updateStepProgress('Deleting panels...');
-        while (true) {
-            const batch = await prisma.panel.findMany({
-                where: { projectId },
-                take: BATCH_SIZE,
-                select: { id: true }
-            });
-            if (batch.length === 0) break;
-            await prisma.panel.deleteMany({
-                where: { id: { in: batch.map(p => p.id) } }
-            });
+        // Step 3-4: Delete Panels directly (Prisma will automatically cascade delete PanelStatus, PanelGroup, and StatusHistory)
+        updateStepProgress('Deleting panels and assignments...');
+        if (panelIds.length > 0) {
+            await deleteInBatches(panelIds, async (batchIds) => {
+                await prisma.panel.deleteMany({ where: { id: { in: batchIds } } });
+            }, "panels");
         }
 
         // Step 5: Delete groups
@@ -130,40 +124,37 @@ async function deleteProject() {
         await prisma.status.deleteMany({ where: { projectId } });
 
         // Step 7: Delete model elements
-        updateStepProgress('Deleting model elements...');
-        const models = await prisma.model.findMany({
-            where: { projectId },
-            select: { id: true }
-        });
-
+        updateStepProgress('Deleting 3D model elements...');
         let deletedModelElements = 0;
-        for (const model of models) {
-            while (true) {
-                const batch = await prisma.modelElement.findMany({
-                    where: { modelId: model.id },
-                    take: BATCH_SIZE,
-                    select: { id: true }
-                });
+        for (const modelId of modelIds) {
+            // We can't query all element IDs at once easily if there are hundreds of thousands, 
+            // but we can query them in chunks using cursor or just offset.
+            // Actually, querying just the IDs by modelId is relatively fast.
+            const elements = await prisma.modelElement.findMany({
+                where: { modelId: modelId },
+                select: { id: true }
+            });
+            const elementIds = elements.map(e => e.id);
 
-                if (batch.length === 0) break;
-
+            for (let i = 0; i < elementIds.length; i += BATCH_SIZE * 2) {
+                const batch = elementIds.slice(i, i + BATCH_SIZE * 2);
                 await prisma.modelElement.deleteMany({
-                    where: { id: { in: batch.map(me => me.id) } }
+                    where: { id: { in: batch } }
                 });
-
+                
                 deletedModelElements += batch.length;
-
-                // Send intermediate progress updates for large model deletions
-                if (deletedModelElements % 500 === 0) {
-                    // Keep status as IN_PROGRESS but update message
+                if (deletedModelElements % 1000 === 0) {
                     sendUpdate('IN_PROGRESS', 70, `Deleting model elements (${deletedModelElements} deleted)...`);
                 }
+                await sleep(30);
             }
         }
 
         // Step 8: Delete models
         updateStepProgress('Deleting models...');
-        await prisma.model.deleteMany({ where: { projectId } });
+        if (modelIds.length > 0) {
+            await prisma.model.deleteMany({ where: { projectId } });
+        }
 
         // Step 9: Delete project members
         updateStepProgress('Deleting project members...');
@@ -171,6 +162,7 @@ async function deleteProject() {
 
         // Step 10: Delete project
         updateStepProgress('Finalizing deletion...');
+        await prisma.projectDeletion.deleteMany({ where: { projectId, id: { not: jobId } } }).catch(() => {}); // Clean up old jobs except this one
         await prisma.project.delete({ where: { id: projectId } });
 
         sendUpdate('COMPLETED', 100, 'Project deleted successfully');
