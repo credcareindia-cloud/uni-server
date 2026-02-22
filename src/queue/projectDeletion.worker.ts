@@ -157,25 +157,28 @@ async function deleteProject() {
             const elementIds = elementRows.map(e => e.id);
             console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting ${elementIds.length} elements...`);
 
-            // Step C: Delete elements in exact chunks of 2,000 using raw SQL array matching
-            // We use ANY(ARRAY) because passing 2000 individual parameters into IN() can cause
-            // Postgres parse timeouts or hit parameter limits. ANY() passes exactly 1 array parameter.
+            // Step C: Delete elements in exact, extremely small chunks of 500
+            // RDS / Prisma connection drops when sending massive arrays or thousands of parameters.
+            // A chunk size of 500 with Prisma.join guarantees safety and bypasses parameter limits.
             let totalDeleted = 0;
-            const chunkSize = 2000;
+            const chunkSize = 500;
             
             for (let j = 0; j < elementIds.length; j += chunkSize) {
                 const chunk = elementIds.slice(j, j + chunkSize);
                 
+                // Use safe, explicit parameterized list (500 limit is well within Postgres 65k safe limit)
                 const deletedChunk = await prisma.$executeRaw`
                     DELETE FROM "model_elements"
-                    WHERE "id" = ANY(${chunk}::text[])
+                    WHERE "id" IN (${Prisma.join(chunk)})
                 `;
                 
                 totalDeleted += deletedChunk;
-                if (j % 10000 === 0 && j > 0) {
+                if (j % 5000 === 0 && j > 0) {
                     console.log(`  ... Deleted ${totalDeleted}/${elementIds.length} elements`);
                 }
-                await sleep(20);
+                
+                // Generous pause to prevent AWS RDS CPU spikes
+                await sleep(50);
             }
             console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: fully deleted ${totalDeleted} elements`);
 
