@@ -566,23 +566,14 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
     // Delete model elements
     logger.info(`   Deleting model elements from ${modelIds.length} models...`);
     for (const modelId of modelIds) {
-      const elements = await prisma.modelElement.findMany({
-        where: { modelId: modelId },
-        select: { id: true }
-      });
-      const elementIds = elements.map(e => e.id);
-
-      for (let i = 0; i < elementIds.length; i += 2000) {
-        const batch = elementIds.slice(i, i + 2000);
-        await prisma.modelElement.deleteMany({
-          where: { id: { in: batch } }
-        });
-        totalDeleted.modelElements += batch.length;
-        if (totalDeleted.modelElements % 1000 === 0) {
-          logger.info(`   Deleted ${totalDeleted.modelElements} model elements...`);
-        }
-        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
-      }
+      // 🚀 FAST PATH: Raw SQL delete bypasses Prisma memory overhead 🚀
+      // Delete all elements for this model in one instant query
+      const result = await prisma.$executeRaw`DELETE FROM "model_elements" WHERE "model_id" = ${modelId}`;
+      
+      totalDeleted.modelElements += result;
+      logger.info(`   Deleted ${result} elements for model ${modelId} (Total: ${totalDeleted.modelElements})...`);
+      
+      await new Promise(resolve => setTimeout(resolve, Math.max(DELAY_MS, 50))); // Ensure at least 50ms delay for elements
     }
 
     // Delete models

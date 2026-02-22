@@ -126,24 +126,14 @@ async function deleteProject() {
         updateStepProgress('Deleting 3D model elements...');
         let deletedModelElements = 0;
         for (const modelId of modelIds) {
-            const elements = await prisma.modelElement.findMany({
-                where: { modelId: modelId },
-                select: { id: true }
-            });
-            const elementIds = elements.map(e => e.id);
-
-            for (let i = 0; i < elementIds.length; i += 2000) {
-                const batch = elementIds.slice(i, i + 2000);
-                await prisma.modelElement.deleteMany({
-                    where: { id: { in: batch } }
-                });
-                
-                deletedModelElements += batch.length;
-                if (deletedModelElements % 1000 === 0) {
-                    sendUpdate('IN_PROGRESS', 70, `Deleting model elements (${deletedModelElements} deleted)...`);
-                }
-                await sleep(10);
-            }
+            // 🚀 FAST PATH: Raw SQL delete bypasses Prisma memory overhead 🚀
+            // Delete all elements for this model in one instant query
+            const result = await prisma.$executeRaw`DELETE FROM "model_elements" WHERE "model_id" = ${modelId}`;
+            
+            deletedModelElements += result;
+            sendUpdate('IN_PROGRESS', 70, `Deleted ${result} elements for model ${modelId} (Total: ${deletedModelElements})...`);
+            
+            await sleep(50);
         }
 
         // Step 8: Delete models
