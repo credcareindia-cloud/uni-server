@@ -147,13 +147,7 @@ async function deleteProject() {
             sendUpdate('IN_PROGRESS', modelProgress, `Deleting model ${i + 1}/${totalModels}...`);
             console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting elements...`);
 
-            // Step A: NULL out panel.element_id references for this specific model
-            // This safely bypasses the Panel.elementId foreign key RESTRICT constraint.
-            await prisma.$executeRaw`
-                UPDATE "panels"
-                SET "element_id" = NULL
-                WHERE "model_id" = ${modelId}
-            `;
+
 
             // Step B: Fetch all element IDs instantly (index only scan)
             const elementRows = await prisma.modelElement.findMany({
