@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 
 // Initialize Prisma Client with extended timeouts for long-running deletion operations.
 // The default socket_timeout is 30s - not enough for large BIM models with 100k+ elements.
@@ -153,24 +153,35 @@ async function deleteProject() {
                 WHERE "model_id" = ${modelId}
             `;
 
-            // Step B: Fast raw SQL delete by model_id in chunks
-            // Deleting 40k+ rows in a single query can hit RDS statement timeouts.
-            // We use a ctid-based fast chunk deletion loop (5,000 per query) until empty.
+            // Step B: Fetch all element IDs instantly (index only scan)
+            const elementRows = await prisma.modelElement.findMany({
+                where: { modelId: modelId },
+                select: { id: true }
+            });
+            const elementIds = elementRows.map(e => e.id);
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting ${elementIds.length} elements...`);
+
+            // Step C: Delete elements in exact chunks of 2,000 using raw SQL array matching
+            // This is lightning fast and guarantees the Postgres query planner doesn't do a full table scan.
             let totalDeleted = 0;
-            while (true) {
+            const chunkSize = 2000;
+            
+            for (let j = 0; j < elementIds.length; j += chunkSize) {
+                const chunk = elementIds.slice(j, j + chunkSize);
+                
+                // Use Prisma's safe parameterized raw IN array
                 const deletedChunk = await prisma.$executeRaw`
                     DELETE FROM "model_elements"
-                    WHERE "id" IN (
-                        SELECT "id" FROM "model_elements"
-                        WHERE "model_id" = ${modelId}
-                        LIMIT 5000
-                    )
+                    WHERE "id" IN (${Prisma.join(chunk)})
                 `;
+                
                 totalDeleted += deletedChunk;
-                if (deletedChunk < 5000) break;
-                await sleep(50); // Small pause for DB connection pool
+                if (j % 10000 === 0 && j > 0) {
+                    console.log(`  ... Deleted ${totalDeleted}/${elementIds.length} elements`);
+                }
+                await sleep(20);
             }
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${totalDeleted} elements`);
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: fully deleted ${totalDeleted} elements`);
 
             // Clear currentModelId on project if it points to this model
             await prisma.$executeRaw`
