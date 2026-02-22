@@ -137,34 +137,39 @@ async function deleteProject() {
         await prisma.status.deleteMany({ where: { projectId } });
 
         // 7. Delete Model Elements AND Models
+        // CRITICAL: Panel.elementId → ModelElement has NO onDelete action (defaults to RESTRICT).
+        // This means Postgres scans the ENTIRE panels table for each element batch.
+        // Fix: First NULL out all elementId references on panels for this project (fast, indexed),
+        // then delete model_elements directly by model_id using raw SQL (no FK scan).
         const totalModels = modelIds.length;
         for (let i = 0; i < modelIds.length; i++) {
             const modelId = modelIds[i];
             const modelProgress = 50 + Math.round((i / totalModels) * 40);
 
-            sendUpdate('IN_PROGRESS', modelProgress, `Deleting model ${i + 1}/${totalModels} elements...`);
+            sendUpdate('IN_PROGRESS', modelProgress, `Deleting model ${i + 1}/${totalModels}...`);
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: removing element references...`);
 
-            // Fetch element IDs for this model
-            const elementRows = await prisma.modelElement.findMany({
-                where: { modelId },
-                select: { id: true }
-            });
-            const elementIds = elementRows.map(e => e.id);
+            // Step A: NULL out panel.element_id references for this specific model
+            // This is a fast UPDATE with an index on panels.model_id
+            await prisma.$executeRaw`
+                UPDATE "panels"
+                SET "element_id" = NULL
+                WHERE "model_id" = ${modelId}
+            `;
 
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: ${elementIds.length} elements`);
+            // Step B: Raw SQL DELETE of all elements for this model
+            // Using model_id index directly - no FK scan, no ID fetching, single fast query
+            const deleted = await prisma.$executeRaw`
+                DELETE FROM "model_elements" WHERE "model_id" = ${modelId}
+            `;
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${deleted} elements`);
 
-            // Delete elements in chunks
-            await deleteInChunks(elementIds, async (batch) => {
-                await prisma.modelElement.deleteMany({ where: { id: { in: batch } } });
-            }, 1000);
+            // Step C: Clear currentModelId on project if it points to this model
+            await prisma.$executeRaw`
+                UPDATE "projects" SET "current_model_id" = NULL WHERE "current_model_id" = ${modelId}
+            `;
 
-            // Fetch and delete ProjectModelHistory references if any exist
-            await prisma.project.updateMany({
-                where: { currentModelId: modelId },
-                data: { currentModelId: null }
-            }).catch(() => {});
-
-            // Delete the empty model shell
+            // Step D: Delete the now-empty model shell
             await prisma.model.delete({ where: { id: modelId } });
 
             await sleep(50);
