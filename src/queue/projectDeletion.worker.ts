@@ -164,17 +164,17 @@ async function deleteProject() {
             console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting ${elementIds.length} elements...`);
 
             // Step C: Delete elements in exact chunks of 2,000 using raw SQL array matching
-            // This is lightning fast and guarantees the Postgres query planner doesn't do a full table scan.
+            // We use ANY(ARRAY) because passing 2000 individual parameters into IN() can cause
+            // Postgres parse timeouts or hit parameter limits. ANY() passes exactly 1 array parameter.
             let totalDeleted = 0;
             const chunkSize = 2000;
             
             for (let j = 0; j < elementIds.length; j += chunkSize) {
                 const chunk = elementIds.slice(j, j + chunkSize);
                 
-                // Use Prisma's safe parameterized raw IN array
                 const deletedChunk = await prisma.$executeRaw`
                     DELETE FROM "model_elements"
-                    WHERE "id" IN (${Prisma.join(chunk)})
+                    WHERE "id" = ANY(${chunk}::text[])
                 `;
                 
                 totalDeleted += deletedChunk;
