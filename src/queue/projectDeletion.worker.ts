@@ -130,11 +130,13 @@ async function deleteProject() {
 
         // 5. Delete Groups
         sendUpdate('IN_PROGRESS', 40, 'Deleting groups...');
-        await prisma.group.deleteMany({ where: { projectId } });
+        // Use raw SQL to bypass Prisma's relation scanning (we already deleted the relations)
+        await prisma.$executeRaw`DELETE FROM "groups" WHERE "project_id" = ${projectId}`;
 
         // 6. Delete Statuses
         sendUpdate('IN_PROGRESS', 45, 'Deleting statuses...');
-        await prisma.status.deleteMany({ where: { projectId } });
+        // Use raw SQL to bypass Prisma's relation scanning
+        await prisma.$executeRaw`DELETE FROM "statuses" WHERE "project_id" = ${projectId}`;
 
         // 7. Delete Model Elements AND Models
         const totalModels = modelIds.length;
