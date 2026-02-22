@@ -122,19 +122,9 @@ async function deleteProject() {
         updateStepProgress('Deleting statuses...');
         await prisma.status.deleteMany({ where: { projectId } });
 
-        // Step 7: Delete model elements
-        updateStepProgress('Deleting 3D model elements...');
-        let deletedModelElements = 0;
-        for (const modelId of modelIds) {
-            // 🚀 FAST PATH: Raw SQL delete bypasses Prisma memory overhead 🚀
-            // Delete all elements for this model in one instant query
-            const result = await prisma.$executeRaw`DELETE FROM "model_elements" WHERE "model_id" = ${modelId}`;
-            
-            deletedModelElements += result;
-            sendUpdate('IN_PROGRESS', 70, `Deleted ${result} elements for model ${modelId} (Total: ${deletedModelElements})...`);
-            
-            await sleep(50);
-        }
+        // Note: Model elements will be automatically deleted when their parent model is deleted
+        // due to Prisma's `onDelete: Cascade` relation on ModelElement -> Model.
+        // We do not need to manually delete them here.
 
         // Step 8: Delete models
         updateStepProgress('Deleting models...');

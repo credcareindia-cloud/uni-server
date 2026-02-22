@@ -563,18 +563,9 @@ router.post('/:id/force-cleanup', asyncHandler(async (req: AuthenticatedRequest,
     const deletedStatuses = await prisma.status.deleteMany({ where: { projectId } });
     totalDeleted.statuses = deletedStatuses.count;
 
-    // Delete model elements
-    logger.info(`   Deleting model elements from ${modelIds.length} models...`);
-    for (const modelId of modelIds) {
-      // 🚀 FAST PATH: Raw SQL delete bypasses Prisma memory overhead 🚀
-      // Delete all elements for this model in one instant query
-      const result = await prisma.$executeRaw`DELETE FROM "model_elements" WHERE "model_id" = ${modelId}`;
-      
-      totalDeleted.modelElements += result;
-      logger.info(`   Deleted ${result} elements for model ${modelId} (Total: ${totalDeleted.modelElements})...`);
-      
-      await new Promise(resolve => setTimeout(resolve, Math.max(DELAY_MS, 50))); // Ensure at least 50ms delay for elements
-    }
+    // Note: Model elements will be automatically deleted when their parent model is deleted
+    // due to Prisma's `onDelete: Cascade` relation on ModelElement -> Model.
+    // We do not need to manually delete them here.
 
     // Delete models
     if (modelIds.length > 0) {

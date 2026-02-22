@@ -22,7 +22,7 @@ const prisma = globalThis.__prisma || new PrismaClient({
 });
 
 // Log slow queries (both dev and production)
-prisma.$on('query' as any, (e: any) => {
+;(prisma as any).$on('query', (e: any) => {
   const threshold = process.env.NODE_ENV === 'production' ? 5000 : 1000;
   if (e.duration > threshold) {
     logger.warn(`Slow query detected: ${e.duration}ms - ${e.query}`);
@@ -83,6 +83,7 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('beforeExit', () => {
   if (!isShuttingDown) {
+    isShuttingDown = true;
     // Only log in development - production auto-scaling generates too much noise
     if (process.env.NODE_ENV !== 'production') {
       logger.info('Process exiting, disconnecting database...');
@@ -98,7 +99,7 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('❌ UNHANDLED REJECTION at:', promise, 'reason:', reason);
+  logger.error('❌ UNHANDLED REJECTION', { promise, reason });
   // Don't exit on unhandled rejection, just log it
 });
 
