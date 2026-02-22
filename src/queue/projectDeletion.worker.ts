@@ -1,8 +1,15 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { PrismaClient } from '@prisma/client';
 
-// Initialize Prisma Client
-const prisma = new PrismaClient();
+// Initialize a dedicated, isolated Prisma Client for the worker
+// This prevents the heavy deletion locks from exhausting the main server's connection pool
+const prisma = new PrismaClient({
+    datasources: {
+        db: {
+            url: process.env.DATABASE_URL + '?connection_limit=2',
+        },
+    }
+});
 
 interface DeletionWorkerData {
     jobId: string;
