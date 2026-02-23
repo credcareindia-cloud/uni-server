@@ -37,7 +37,7 @@ RUN npm run build:quiet
 EXPOSE 4000
 
 # Create startup script to clean up failed migrations, then run migrations and start server
-RUN printf '#!/bin/sh\necho "Running database migrations..."\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
+RUN printf '#!/bin/sh\necho "Running database migrations..."\necho "Resolving any failed migrations..."\nnpx prisma migrate resolve --rolled-back 20260223000000_fix_panel_fk_on_delete_set_null 2>/dev/null || true\necho "Deploying migrations..."\nnpx prisma migrate deploy\necho "Starting server..."\nnpm start\n' > /app/start.sh && chmod +x /app/start.sh
 
 # Default command
 CMD ["/app/start.sh"]
