@@ -139,7 +139,10 @@ async function deleteProject() {
             console.log(`[Delete ${projectId}] Panels deleted`);
         }
 
-        // ── Step 5: Delete Model Elements (now instant, no panel references left) ─
+        // ── Step 5: Delete Model Elements (single-shot, instant — no FK cascade work left) ─
+        // Since panels are already deleted above, Postgres has NO rows to scan for the
+        // ON DELETE SET NULL constraint. A direct DELETE by model_id is a pure index
+        // scan on model_elements.model_id and completes in milliseconds for any size.
         const modelRows = await prisma.model.findMany({
             where: { projectId },
             select: { id: true },
@@ -153,19 +156,11 @@ async function deleteProject() {
             const modelProgress = 55 + Math.round(((i + 1) / (totalModels || 1)) * 30);
             sendUpdate('IN_PROGRESS', modelProgress, `Deleting model ${i + 1}/${totalModels}...`);
 
-            // No panels reference these elements anymore → deletion is now an instant index scan
-            const elementRows = await prisma.modelElement.findMany({ where: { modelId }, select: { id: true } });
-            const elementIds = elementRows.map(e => e.id);
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting ${elementIds.length} elements...`);
-            
-            let totalDeleted = 0;
-            for (let j = 0; j < elementIds.length; j += 2000) {
-                const chunk = elementIds.slice(j, j + 2000);
-                const result = await prisma.modelElement.deleteMany({ where: { id: { in: chunk } } }).catch(() => ({ count: 0 }));
-                totalDeleted += result.count;
-                await sleep(50); 
-            }
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${totalDeleted} elements`);
+            // Single-shot direct DELETE — no chunks needed, no FK work (panels are gone)
+            const deleted = await prisma.$executeRaw`
+                DELETE FROM "model_elements" WHERE "model_id" = ${modelId}
+            `;
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${deleted} elements`);
 
             await prisma.model.delete({ where: { id: modelId } }).catch(() => {});
             await sleep(30);
