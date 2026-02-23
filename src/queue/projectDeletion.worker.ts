@@ -149,37 +149,13 @@ async function deleteProject() {
 
 
 
-            // Step B: Fetch all element IDs instantly (index only scan)
-            const elementRows = await prisma.modelElement.findMany({
-                where: { modelId: modelId },
-                select: { id: true }
-            });
-            const elementIds = elementRows.map(e => e.id);
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting ${elementIds.length} elements...`);
-
-            // Step C: Delete elements in exact chunks.
-            // Using Prisma native deleteMany with a small chunk is the safest way to avoid
-            // RDS/Postgres driver P2010 crashes caused by raw SQL parameter serialization limits.
-            let totalDeleted = 0;
-            const chunkSize = 2000;
-            
-            for (let j = 0; j < elementIds.length; j += chunkSize) {
-                const chunk = elementIds.slice(j, j + chunkSize);
-                
-                // Native Prisma batch delete (safely parameterizes `in:` under the hood)
-                const { count } = await prisma.modelElement.deleteMany({
-                    where: { id: { in: chunk } }
-                });
-                
-                totalDeleted += count;
-                if (j % 4000 === 0 && j > 0) {
-                    console.log(`  ... Deleted ${totalDeleted}/${elementIds.length} elements`);
-                }
-                
-                // Generous pause to prevent AWS RDS CPU spikes
-                await sleep(50);
-            }
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: fully deleted ${totalDeleted} elements`);
+            // Step B: Direct DELETE by model_id.
+            // Now that ON DELETE SET NULL is applied on panels.element_id,
+            // Postgres will NOT scan the panels table — it's an instant indexed delete.
+            const countResult = await prisma.$executeRaw`
+                DELETE FROM "model_elements" WHERE "model_id" = ${modelId}
+            `;
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${countResult} elements`);
 
             // Clear currentModelId on project if it points to this model
             await prisma.$executeRaw`
