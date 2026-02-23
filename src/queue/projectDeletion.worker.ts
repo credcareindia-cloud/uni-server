@@ -1,28 +1,21 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { PrismaClient, Prisma } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
-// Initialize Prisma Client with extended timeouts for long-running deletion operations.
-// The default socket_timeout is 30s - not enough for large BIM models with 100k+ elements.
-// We override it to 300s (5 min) so chunked deletes never get cut off mid-way.
+// Extended socket_timeout so that large raw SQL deletes never get cut off.
 function buildDatabaseUrl(): string {
     const base = process.env.DATABASE_URL || '';
     try {
         const url = new URL(base);
-        url.searchParams.set('socket_timeout', '300');  // 5 minutes per query max
-        url.searchParams.set('connect_timeout', '60');  // 60s to establish connection
+        url.searchParams.set('socket_timeout', '300');
+        url.searchParams.set('connect_timeout', '60');
         return url.toString();
     } catch {
-        // If URL parsing fails, return the original URL unchanged
         return base;
     }
 }
 
 const prisma = new PrismaClient({
-    datasources: {
-        db: {
-            url: buildDatabaseUrl(),
-        },
-    },
+    datasources: { db: { url: buildDatabaseUrl() } },
 });
 
 interface DeletionWorkerData {
@@ -33,8 +26,12 @@ interface DeletionWorkerData {
 
 const data = workerData as DeletionWorkerData;
 
-// Helper to send updates to main thread
-const sendUpdate = (status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED', progress: number, message: string, error?: string) => {
+const sendUpdate = (
+    status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED',
+    progress: number,
+    message: string,
+    error?: string
+) => {
     if (parentPort) {
         parentPort.postMessage({
             type: 'deletion_status_update',
@@ -42,25 +39,41 @@ const sendUpdate = (status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED', progress: nu
             status,
             progress,
             message,
-            error
+            error,
         });
     }
 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Delete items in small chunks to never hit the 30s DB timeout
-async function deleteInChunks(
-    ids: string[],
-    deleteFn: (batchIds: string[]) => Promise<any>,
-    chunkSize = 1000
-) {
-    for (let i = 0; i < ids.length; i += chunkSize) {
-        const batch = ids.slice(i, i + chunkSize);
-        await deleteFn(batch);
-        await sleep(20);
-    }
-}
+// ──────────────────────────────────────────────────────────────────────────────
+// SCHEMA ANALYSIS:
+//
+//  QRCode        → has projectId (plain column, no FK cascade from Panel/Project)
+//  QRScan        → onDelete: Cascade from QRCode
+//  UserPanelView → has panelId (plain column, no FK to Panel)
+//
+//  --- Everything below HAS proper cascades already ---
+//  Panel         → onDelete: Cascade from Project
+//  PanelStatus   → onDelete: Cascade from Panel
+//  PanelGroup    → onDelete: Cascade from Panel
+//  StatusHistory → onDelete: Cascade from Panel
+//  Group         → onDelete: Cascade from Project
+//  Status        → onDelete: Cascade from Project
+//  ProjectMember → onDelete: Cascade from Project
+//  ModelElement  → onDelete: Cascade from Model
+//  Model         → onDelete: Cascade from Project
+//
+//  panels.model_id   → ON DELETE SET NULL  (migration applied ✅)
+//  panels.element_id → ON DELETE SET NULL  (migration applied ✅)
+//
+// STRATEGY:
+//  1. Delete QRCodes by projectId  → QRScans cascade automatically
+//  2. Delete UserPanelViews by panelId (via subquery)
+//  3. Delete the Project — Postgres cascades ALL other children automatically
+//     (models → model_elements, panels → panel_statuses/groups/history, groups, statuses, etc.)
+//  4. All raw SQL, all idempotent (won't crash if rows already gone)
+// ──────────────────────────────────────────────────────────────────────────────
 
 async function deleteProject() {
     const { jobId, projectId } = data;
@@ -68,123 +81,101 @@ async function deleteProject() {
     try {
         sendUpdate('IN_PROGRESS', 2, 'Starting project deletion...');
 
-        // ── Step 1: Fetch project structure upfront ──────────────────────────
-        sendUpdate('IN_PROGRESS', 5, 'Fetching project structure...');
-
+        // Verify project exists (idempotent — exit cleanly if already gone)
         const project = await prisma.project.findUnique({
             where: { id: projectId },
-            select: { name: true }
+            select: { name: true },
         });
 
         if (!project) {
-            throw new Error(`Project ${projectId} not found`);
+            console.log(`[Delete ${projectId}] Project already deleted or does not exist. Marking COMPLETED.`);
+            sendUpdate('COMPLETED', 100, 'Project already deleted');
+            await prisma.$disconnect();
+            process.exit(0);
         }
 
-        const panelRows = await prisma.panel.findMany({
-            where: { projectId },
-            select: { id: true }
-        });
-        const panelIds = panelRows.map(p => p.id);
+        console.log(`[Delete ${projectId}] Deleting "${project.name}"`);
 
+        // ── Step 1: Delete QR Codes (no cascade from project, must be manual) ─
+        sendUpdate('IN_PROGRESS', 10, 'Deleting QR codes...');
+        const qrDeleted = await prisma.$executeRaw`
+            DELETE FROM "qr_codes" WHERE "project_id" = ${projectId}
+        `;
+        console.log(`[Delete ${projectId}] QR codes deleted: ${qrDeleted}`);
+
+        // ── Step 2: Delete UserPanelViews (no cascade from panel/project) ─────
+        sendUpdate('IN_PROGRESS', 20, 'Deleting user panel views...');
+        const viewsDeleted = await prisma.$executeRaw`
+            DELETE FROM "user_panel_views"
+            WHERE "panel_id" IN (
+                SELECT "id" FROM "panels" WHERE "project_id" = ${projectId}
+            )
+        `;
+        console.log(`[Delete ${projectId}] User panel views deleted: ${viewsDeleted}`);
+
+        // ── Step 3: NULL out project.current_model_id to allow project delete ─
+        // The Project has a @unique FK to Model via current_model_id.
+        // We must null it out first so the cascading delete of models doesn't
+        // conflict with the unique constraint.
+        sendUpdate('IN_PROGRESS', 30, 'Preparing model references...');
+        await prisma.$executeRaw`
+            UPDATE "projects" SET "current_model_id" = NULL WHERE "id" = ${projectId}
+        `;
+
+        // ── Step 4: Delete Models (cascades ModelElements automatically) ──────
+        // We delete models one by one so large projects don't hit a single
+        // massive cascade. Each model may have 20k+ elements.
+        sendUpdate('IN_PROGRESS', 40, 'Deleting models and their elements...');
         const modelRows = await prisma.model.findMany({
             where: { projectId },
-            select: { id: true }
+            select: { id: true },
         });
-        const modelIds = modelRows.map(m => m.id);
 
-        console.log(`[Delete ${projectId}] panels=${panelIds.length}, models=${modelIds.length}`);
+        const totalModels = modelRows.length;
+        console.log(`[Delete ${projectId}] Found ${totalModels} models to delete`);
 
-        // ── TOPOLOGICAL DELETE (Bottom-Up) ───────────────────────────────────
-        // We MUST delete all children manually in chunks to prevent ANY database
-        // cascade from timing out the 30s connection limit.
-
-        // 1. Delete QR codes (no Prisma cascade on this)
-        sendUpdate('IN_PROGRESS', 10, 'Deleting QR codes...');
-        await prisma.qRCode.deleteMany({ where: { projectId } }).catch(() => {});
-
-        // 2. Delete UserPanelViews
-        sendUpdate('IN_PROGRESS', 15, 'Deleting user panel views...');
-        if (panelIds.length > 0) {
-            await deleteInChunks(panelIds, async (batch) => {
-                await prisma.userPanelView.deleteMany({ where: { panelId: { in: batch } } }).catch(() => {});
-            });
-        }
-
-        // 3. Delete Panel assignments (Status and Group joins, plus history)
-        sendUpdate('IN_PROGRESS', 20, 'Deleting panel assignments (statuses, groups, history)...');
-        if (panelIds.length > 0) {
-            await deleteInChunks(panelIds, async (batch) => {
-                await prisma.panelStatus.deleteMany({ where: { panelId: { in: batch } } });
-                await prisma.panelGroup.deleteMany({ where: { panelId: { in: batch } } });
-                await prisma.statusHistory.deleteMany({ where: { panelId: { in: batch } } });
-            });
-        }
-
-        // 4. Delete Panels themselves
-        sendUpdate('IN_PROGRESS', 25, `Deleting ${panelIds.length} panels...`);
-        if (panelIds.length > 0) {
-            await deleteInChunks(panelIds, async (batch) => {
-                await prisma.panel.deleteMany({ where: { id: { in: batch } } });
-            });
-        }
-
-        // 5. Delete Groups
-        sendUpdate('IN_PROGRESS', 40, 'Deleting groups...');
-        // Use raw SQL to bypass Prisma's relation scanning (we already deleted the relations)
-        await prisma.$executeRaw`DELETE FROM "groups" WHERE "project_id" = ${projectId}`;
-
-        // 6. Delete Statuses
-        sendUpdate('IN_PROGRESS', 45, 'Deleting statuses...');
-        // Use raw SQL to bypass Prisma's relation scanning
-        await prisma.$executeRaw`DELETE FROM "statuses" WHERE "project_id" = ${projectId}`;
-
-        // 7. Delete Model Elements AND Models
-        const totalModels = modelIds.length;
-        for (let i = 0; i < modelIds.length; i++) {
-            const modelId = modelIds[i];
-            const modelProgress = 50 + Math.round((i / totalModels) * 40);
-
+        for (let i = 0; i < totalModels; i++) {
+            const modelId = modelRows[i].id;
+            const modelProgress = 40 + Math.round(((i + 1) / (totalModels || 1)) * 40);
             sendUpdate('IN_PROGRESS', modelProgress, `Deleting model ${i + 1}/${totalModels}...`);
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleting elements...`);
 
-
-
-            // Step B: Direct DELETE by model_id.
-            // Now that ON DELETE SET NULL is applied on panels.element_id,
-            // Postgres will NOT scan the panels table — it's an instant indexed delete.
-            const countResult = await prisma.$executeRaw`
+            // Delete model elements first (bypasses cascade, instant indexed delete)
+            const elementsDeleted = await prisma.$executeRaw`
                 DELETE FROM "model_elements" WHERE "model_id" = ${modelId}
             `;
-            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${countResult} elements`);
+            console.log(`[Delete ${projectId}] Model ${i + 1}/${totalModels}: deleted ${elementsDeleted} elements`);
 
-            // Clear currentModelId on project if it points to this model
+            // Delete the model shell itself (idempotent — ignore if already gone)
             await prisma.$executeRaw`
-                UPDATE "projects" SET "current_model_id" = NULL WHERE "current_model_id" = ${modelId}
+                DELETE FROM "models" WHERE "id" = ${modelId}
             `;
 
-            // Delete the now-empty model shell
-            await prisma.model.delete({ where: { id: modelId } });
-
-            await sleep(50);
+            await sleep(30); // Breathing room between models
         }
 
-        // 8. Delete project members
-        sendUpdate('IN_PROGRESS', 92, 'Deleting project members...');
-        await prisma.projectMember.deleteMany({ where: { projectId } });
+        // ── Step 5: Delete the Project (cascades everything else) ─────────────
+        // At this point: QRCodes, UserPanelViews, and ModelElements/Models are gone.
+        // Postgres will now cascade-delete: Panels → PanelStatuses/Groups/History,
+        // Groups, Statuses, ProjectMembers, etc.
+        sendUpdate('IN_PROGRESS', 85, 'Finalizing project deletion...');
+        const projectDeleted = await prisma.$executeRaw`
+            DELETE FROM "projects" WHERE "id" = ${projectId}
+        `;
+        console.log(`[Delete ${projectId}] Project deleted: ${projectDeleted} row(s)`);
 
-        // 9. Delete the project itself
-        sendUpdate('IN_PROGRESS', 97, 'Finalizing...');
+        // ── Step 6: Clean up this deletion job record ─────────────────────────
         await prisma.projectDeletion.deleteMany({
-            where: { projectId, id: { not: jobId } }
+            where: { projectId, id: { not: jobId } },
         }).catch(() => {});
-        await prisma.project.delete({ where: { id: projectId } });
 
         sendUpdate('COMPLETED', 100, 'Project deleted successfully');
+        console.log(`[Delete ${projectId}] ✅ Completed successfully`);
+
         await prisma.$disconnect();
         process.exit(0);
 
     } catch (error) {
-        console.error('Deletion worker error:', error);
+        console.error(`[Delete ${data.projectId}] ❌ Deletion failed:`, error);
         sendUpdate(
             'FAILED',
             0,
