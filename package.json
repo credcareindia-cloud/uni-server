@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "dev": "node --max-old-space-size=8192 --expose-gc --no-warnings ./node_modules/tsx/dist/cli.mjs watch src/index.ts",
+    "ensure-dist-workers": "node scripts/ensure-dist-workers.mjs",
+    "dev": "node scripts/ensure-dist-workers.mjs && node --max-old-space-size=8192 --expose-gc --no-warnings ./node_modules/tsx/dist/cli.mjs watch src/index.ts",
     "build": "tsc --noEmit false --skipLibCheck --noUnusedLocals false --noUnusedParameters false",
     "build:soft": "tsc --noEmit false || true",
     "build:quiet": "tsc --noEmit false >/dev/null 2>&1 || true",
@@ -63,6 +64,7 @@
     "@types/uuid": "^9.0.7",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
+    "esbuild": "^0.24.0",
     "eslint": "^8.57.1",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^16.5.0",

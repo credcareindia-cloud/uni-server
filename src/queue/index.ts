@@ -1,4 +1,7 @@
 import { Worker } from 'node:worker_threads';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import { logger } from '../utils/logger.js';
 
@@ -88,13 +91,20 @@ const ACTIVE = new Map<string, Worker>();
 let started = false;
 
 function resolveWorkerUrl(jobType: 'legacy' | 'process-first' | 'deletion' = 'legacy') {
-  // Workers must use compiled JS files from dist (worker threads don't support .ts)
-  if (jobType === 'process-first') {
-    return new URL('../../dist/queue/processFirst.worker.js', import.meta.url);
-  } else if (jobType === 'deletion') {
-    return new URL('../../dist/queue/projectDeletion.worker.js', import.meta.url);
+  const file =
+    jobType === 'process-first'
+      ? 'processFirst.worker.js'
+      : jobType === 'deletion'
+        ? 'projectDeletion.worker.js'
+        : 'modelProcessor.worker.js';
+  // Worker threads load plain Node ESM from dist (tsx does not resolve .js→.ts inside workers).
+  const abs = join(process.cwd(), 'dist', 'queue', file);
+  if (!existsSync(abs)) {
+    throw new Error(
+      `Missing compiled worker: ${abs}. Run "npm run build" once (or use a dev script that builds before watch).`
+    );
   }
-  return new URL('../../dist/queue/modelProcessor.worker.js', import.meta.url);
+  return pathToFileURL(abs);
 }
 
 function spawnWorker(job: InternalJob | ProcessFirstInternalJob | ProjectDeletionInternalJob) {

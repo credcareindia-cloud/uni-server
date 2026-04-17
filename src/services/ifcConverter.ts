@@ -3,6 +3,63 @@ import { logger } from '../utils/logger.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
+type StoreyElementRow = { id: string; name: string; type: string; material: string };
+
+/**
+ * When IFC lists both a Structural Framing Assembly and a Structural Connections Assembly
+ * for the same panel tag (e.g. *ILB-101:…), keep only the Framing row for DB / panel management.
+ */
+export function dedupeIfcStoreyElementsPreferFraming(elements: StoreyElementRow[]): StoreyElementRow[] {
+  const isAssembly = (t: string) => (t || '').toUpperCase().includes('ELEMENTASSEMBLY');
+
+  const tagKey = (name: string): string | null => {
+    const n = name || '';
+    const star = n.match(/\*([A-Z][A-Z0-9]*-\d+)/i);
+    if (star) return star[1].toUpperCase();
+    const w = n.match(/\b([A-Z][A-Z0-9]{1,12}-\d{2,10})\b/);
+    return w ? w[1].toUpperCase() : null;
+  };
+
+  const framingScore = (name: string): number => {
+    const low = (name || '').toLowerCase();
+    if (low.includes('framing')) return 2;
+    if (low.includes('connection') || low.includes('connections')) return 0;
+    return 1;
+  };
+
+  const byKey = new Map<string, number[]>();
+  for (let i = 0; i < elements.length; i++) {
+    const e = elements[i];
+    if (!isAssembly(e.type)) continue;
+    const key = tagKey(e.name);
+    if (!key) continue;
+    const arr = byKey.get(key) || [];
+    arr.push(i);
+    byKey.set(key, arr);
+  }
+
+  const drop = new Set<number>();
+  for (const indices of byKey.values()) {
+    if (indices.length < 2) continue;
+    let best = indices[0];
+    let bestScore = framingScore(elements[best].name);
+    for (let k = 1; k < indices.length; k++) {
+      const idx = indices[k];
+      const sc = framingScore(elements[idx].name);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = idx;
+      }
+    }
+    for (const idx of indices) {
+      if (idx !== best) drop.add(idx);
+    }
+  }
+
+  if (!drop.size) return elements;
+  return elements.filter((_, i) => !drop.has(i));
+}
+
 /**
  * IFC to Fragments Converter Service
  * Converts IFC files to optimized .frag format and extracts metadata
@@ -181,7 +238,9 @@ export class IfcConverterService {
                   const elementId = elementRef.value;
                   const element = ifcApi.GetLine(modelID, elementId);
                   const elementType = ifcApi.GetNameFromTypeCode(element.type);
-                  const elementName = element.Name?.value || element.Tag?.value || `${elementType}-${elementId}`;
+                  const rawName = element.Name?.value != null ? String(element.Name.value) : '';
+                  const rawTag = element.Tag?.value != null ? String(element.Tag.value) : '';
+                  const elementName = rawName || rawTag || `${elementType}-${elementId}`;
 
                   // Extract material information
                   let material = 'N/A';
@@ -225,10 +284,19 @@ export class IfcConverterService {
           logger.warn(`⚠️  Could not extract elements for storey: ${storeyName}`);
         }
 
+        const dedupedElements = dedupeIfcStoreyElementsPreferFraming(storeyElements);
+        if (dedupedElements.length !== storeyElements.length) {
+          logger.info(
+            `📐 Storey "${storeyName}": removed ${storeyElements.length - dedupedElements.length} duplicate IfcElementAssembly row(s) (kept Framing over Connections where both exist)`
+          );
+        }
+        const finalElements = dedupedElements;
+        const finalCount = finalElements.length;
+
         storeys.push({
           name: storeyName,
-          elementCount,
-          elements: storeyElements
+          elementCount: finalCount,
+          elements: finalElements
         });
 
         logger.info(`📦 Storey: ${storeyName} (${elementCount} elements, ${storeyElements.length} panels extracted)`);

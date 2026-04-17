@@ -64,51 +64,72 @@ export function checkSystemHealth(): { healthy: boolean; warnings: string[] } {
   };
 }
 
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function envFlagOff(name: string): boolean {
+  const raw = (process.env[name] || '').toLowerCase();
+  return raw === 'off' || raw === 'false' || raw === '0' || raw === 'disabled';
+}
+
 export function shouldRejectLargeFile(fileSizeMB: number): { reject: boolean; reason?: string } {
-  // Check if running in production (AWS Fargate) - be more permissive
+  // Escape hatch: allow fully disabling the guard (useful on dev machines where
+  // macOS reports high "used" memory for file cache / other apps).
+  if (envFlagOff('UPLOAD_MEMORY_GUARD')) {
+    return { reject: false };
+  }
+
   const isProduction = process.env.NODE_ENV === 'production';
   const resources = getSystemResources();
-  
+
   if (isProduction) {
-    // In production (AWS Fargate), only reject if system is critically overloaded
-    if (resources.memoryUsage.usedPercent > 95) {
+    const prodMaxUsedPercent = envNumber('UPLOAD_PROD_MAX_MEMORY_PERCENT', 95);
+    if (resources.memoryUsage.usedPercent > prodMaxUsedPercent) {
       return {
         reject: true,
         reason: `System critically overloaded (${resources.memoryUsage.usedPercent}% memory). Please try again in a moment.`
       };
     }
-    
-    // Allow much larger files in production with dedicated resources
+
     const availableMemoryMB = resources.memoryUsage.free;
-    const estimatedProcessingMemoryMB = fileSizeMB * 3; // Less conservative in production
-    
-    if (estimatedProcessingMemoryMB > availableMemoryMB * 0.9) {
+    const multiplier = envNumber('UPLOAD_PROD_MEMORY_MULTIPLIER', 3);
+    const availableRatio = envNumber('UPLOAD_PROD_AVAILABLE_RATIO', 0.9);
+    const estimatedProcessingMemoryMB = fileSizeMB * multiplier;
+
+    if (estimatedProcessingMemoryMB > availableMemoryMB * availableRatio) {
       return {
         reject: true,
         reason: `Insufficient memory for processing ${fileSizeMB.toFixed(1)}MB file. Available: ${availableMemoryMB}MB, Required: ~${estimatedProcessingMemoryMB.toFixed(1)}MB.`
       };
     }
-    
+
     return { reject: false };
   }
-  
-  // Development environment - keep some restrictions for local stability
-  if (resources.memoryUsage.usedPercent > 80) {
+
+  // Development environment - configurable ceilings.
+  const devMaxUsedPercent = envNumber('UPLOAD_DEV_MAX_MEMORY_PERCENT', 80);
+  if (resources.memoryUsage.usedPercent > devMaxUsedPercent) {
     return {
       reject: true,
-      reason: `Development environment memory usage high (${resources.memoryUsage.usedPercent}%). Try on production or use a smaller file.`
+      reason: `Development memory guard tripped: ${resources.memoryUsage.usedPercent}% used > ${devMaxUsedPercent}% allowed. Close other apps or set UPLOAD_MEMORY_GUARD=off (or raise UPLOAD_DEV_MAX_MEMORY_PERCENT).`
     };
   }
-  
+
   const availableMemoryMB = resources.memoryUsage.free;
-  const estimatedProcessingMemoryMB = fileSizeMB * 4;
-  
-  if (estimatedProcessingMemoryMB > availableMemoryMB * 0.7) {
+  const multiplier = envNumber('UPLOAD_DEV_MEMORY_MULTIPLIER', 4);
+  const availableRatio = envNumber('UPLOAD_DEV_AVAILABLE_RATIO', 0.7);
+  const estimatedProcessingMemoryMB = fileSizeMB * multiplier;
+
+  if (estimatedProcessingMemoryMB > availableMemoryMB * availableRatio) {
     return {
       reject: true,
-      reason: `Development environment: Insufficient memory for ${fileSizeMB.toFixed(1)}MB file. Available: ${availableMemoryMB}MB. Deploy to production for large files.`
+      reason: `Dev memory guard: estimated ${estimatedProcessingMemoryMB.toFixed(1)}MB > ${(availableMemoryMB * availableRatio).toFixed(1)}MB allowed for ${fileSizeMB.toFixed(1)}MB file. Set UPLOAD_MEMORY_GUARD=off or raise UPLOAD_DEV_AVAILABLE_RATIO / UPLOAD_DEV_MEMORY_MULTIPLIER.`
     };
   }
-  
+
   return { reject: false };
 }

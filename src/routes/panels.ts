@@ -540,6 +540,8 @@ router.get('/:projectId', async (req, res) => {
   try {
     const { projectId } = req.params;
     const { status, groupId, customStatusId, search, page = '1', limit = '50', modelId, storey } = req.query;
+    // Toggle: include "Structural Connections Assembly" panels. Default: false (hidden).
+    const includeConnections = String(req.query.includeConnections || '').toLowerCase() === 'true';
 
     const pageNum = parseInt(page as string);
     const limitNum = Math.min(parseInt(limit as string), 100); // Max 100 per page
@@ -625,6 +627,20 @@ router.get('/:projectId', async (req, res) => {
           }
         }
       ];
+    }
+
+    // Exclude "Structural Connections Assembly" panels unless explicitly included.
+    // Matches the panel names stored by the IFC extractor, e.g.
+    //   "Structural Connections Assembly:*ILB-101:2014030"
+    if (!includeConnections) {
+      const connectionFilter = {
+        NOT: {
+          name: { contains: 'Connections Assembly', mode: 'insensitive' as const }
+        }
+      };
+      where.AND = Array.isArray(where.AND)
+        ? [...where.AND, connectionFilter]
+        : [connectionFilter];
     }
 
     // Get total count for pagination (database count)
@@ -1132,21 +1148,35 @@ router.patch('/:projectId/:panelId/status', async (req, res) => {
 router.patch('/:panelId', async (req, res) => {
   try {
     const { panelId } = req.params;
-    const { notes, statusIds, groupIds } = req.body;
+    const { notes, statusIds, groupIds, name, tag } = req.body;
 
     // Start a transaction to update panel, statuses, and groups
     const panel = await prisma.$transaction(async (tx) => {
-      // Update panel notes if provided
-      // const updateData: any = {};
-      // if (notes !== undefined) {
-      //   updateData.notes = notes;
-      // }
+      // Build direct panel field updates (name/tag/notes are simple scalar fields).
+      const updateData: Record<string, any> = {};
+      if (typeof name === 'string') {
+        const trimmed = name.trim();
+        if (trimmed.length === 0) {
+          throw new Error('Panel name cannot be empty');
+        }
+        if (trimmed.length > 500) {
+          throw new Error('Panel name is too long');
+        }
+        updateData.name = trimmed;
+      }
+      if (typeof tag === 'string') {
+        updateData.tag = tag.trim() || null;
+      }
+      if (typeof notes === 'string') {
+        updateData.notes = notes;
+      }
 
-      // Update the panel
-      // const updatedPanel = await tx.panel.update({
-      //   where: { id: panelId },
-      //   data: updateData,
-      // });
+      if (Object.keys(updateData).length > 0) {
+        await tx.panel.update({
+          where: { id: panelId },
+          data: updateData,
+        });
+      }
 
       // Update statuses if provided
       if (statusIds !== undefined && Array.isArray(statusIds)) {

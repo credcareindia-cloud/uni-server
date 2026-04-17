@@ -257,3 +257,10 @@ LOG_LEVEL=DEBUG npm run dev
 ## 📄 License
 
 MIT License - see LICENSE file for details
+
+----------------------
+cd /Users/user/opencoders/uniqube3d/uni-server && docker compose up -d
+
+cd /Users/user/opencoders/uniqube3d/uni-server && npm run dev
+
+cd /Users/user/opencoders/uniqube3d/uniqube && npm run dev
