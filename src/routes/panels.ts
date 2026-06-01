@@ -667,87 +667,95 @@ router.get('/:projectId', async (req, res) => {
       console.error('Error parsing spatial structure:', error);
     }
 
-    const panels = await prisma.panel.findMany({
+    // Natural-sort panels by name across the whole result set so pagination is
+    // consistent (e.g. "Be1, Be2, …, Be10, Be11" instead of lexicographic
+    // "Be1, Be10, Be11, Be2"). We do this in two steps:
+    //   1. Cheap query of (id, name) for ALL matching rows -> sort -> slice.
+    //   2. Full fetch only for the page's IDs, then reorder.
+    const idAndName = await prisma.panel.findMany({
       where,
-      select: {
-        id: true,
-        projectId: true,
-        modelId: true,
-        elementId: true,
-        name: true,
-        tag: true,
-        objectType: true,
-        dimensions: true,
-        location: true,
-        material: true,
-        weight: true,
-        area: true,
-        productionDate: true,
-        shippingDate: true,
-        installationDate: true,
-        notes: true,
-        metadata: true, // ✅ Now explicitly returning metadata with ifcElementId
-        createdAt: true,
-        updatedAt: true,
-        groups: {
-          include: {
-            group: {
-              select: {
-                id: true,
-                name: true,
-                color: true,
-              },
-            },
-          },
-        },
-        statuses: {
-          include: {
-            status: {
-              select: {
-                id: true,
-                name: true,
-                color: true,
-                icon: true,
-                description: true,
-                order: true,
-              },
-            },
-          },
-        },
-        model: {
-          select: {
-            id: true,
-            originalFilename: true,
-          },
-        },
-        element: {
-          select: {
-            id: true,
-            ifcType: true,
-            globalId: true,
-            expressId: true, // Include expressId for robust mapping
-          },
-        },
-        statusHistory: {
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-          },
-        },
-      },
-      orderBy: [
-        { createdAt: 'desc' },
-        { id: 'asc' }
-      ],
-      skip,
-      take: limitNum,
+      select: { id: true, name: true, createdAt: true },
     });
+
+    const naturalCompare = (a: string, b: string) =>
+      (a || '').localeCompare(b || '', undefined, { numeric: true, sensitivity: 'base' });
+
+    idAndName.sort((a, b) => {
+      const byName = naturalCompare(a.name || '', b.name || '');
+      if (byName !== 0) return byName;
+      // Stable secondary key for rows with identical names.
+      const aTs = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTs = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return aTs - bTs;
+    });
+
+    const pageIds = idAndName.slice(skip, skip + limitNum).map(r => r.id);
+
+    let panels: any[] = [];
+    if (pageIds.length > 0) {
+      const fullPanels = await prisma.panel.findMany({
+        where: { id: { in: pageIds } },
+        select: {
+          id: true,
+          projectId: true,
+          modelId: true,
+          elementId: true,
+          name: true,
+          tag: true,
+          objectType: true,
+          dimensions: true,
+          location: true,
+          material: true,
+          weight: true,
+          area: true,
+          productionDate: true,
+          shippingDate: true,
+          installationDate: true,
+          notes: true,
+          metadata: true,
+          createdAt: true,
+          updatedAt: true,
+          groups: {
+            include: {
+              group: { select: { id: true, name: true, color: true } },
+            },
+          },
+          statuses: {
+            include: {
+              status: {
+                select: {
+                  id: true,
+                  name: true,
+                  color: true,
+                  icon: true,
+                  description: true,
+                  order: true,
+                },
+              },
+            },
+          },
+          model: { select: { id: true, originalFilename: true } },
+          element: {
+            select: {
+              id: true,
+              ifcType: true,
+              globalId: true,
+              expressId: true,
+            },
+          },
+          statusHistory: {
+            orderBy: { createdAt: 'desc' },
+            take: 5,
+            include: {
+              user: { select: { id: true, name: true } },
+            },
+          },
+        },
+      });
+
+      const panelMap = new Map(fullPanels.map(p => [p.id, p]));
+      panels = pageIds.map(id => panelMap.get(id)).filter(Boolean);
+    }
 
     res.json({
       panels,

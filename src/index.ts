@@ -24,6 +24,7 @@ import groupManagementRoutes from './routes/group-management.js';
 import adminRoutes from './routes/admin.js';
 import userRoutes from './routes/user.js';
 import qrCodeRoutes from './routes/qr_routes.js';
+import documentRoutes from './routes/documents.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { startModelProcessingQueue } from './queue/index.js';
@@ -134,6 +135,7 @@ app.use('/api/group-management', groupManagementRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/qr-codes', qrCodeRoutes); // QR code API endpoints
+app.use('/api/documents', documentRoutes);
 app.use('/qr', qrCodeRoutes); // Public QR redirect endpoint
 app.use('/api', modelFirstProjectRouter);
 app.use('/api', uploadProcessRouter);

@@ -56,6 +56,7 @@ model User {
   panelGroupAssignments  PanelGroup[]
   projectMemberships     ProjectMember[]
   panelViews             UserPanelView[]
+  uploadedDocuments      ProjectDocument[] @relation("UserUploadedDocuments")
 
   @@map("users")
 }
@@ -99,10 +100,32 @@ model Project {
   panels        Panel[]        // Panels in this project
   statuses      Status[]       // Custom statuses for this project
   members       ProjectMember[] // Project members and roles
+  documents     ProjectDocument[] // Project-level documents (PDFs, drawings, etc.)
 
   @@unique([organizationId, displayNumber])
   @@index([organizationId])
   @@map("projects")
+}
+
+model ProjectDocument {
+  id               String   @id @default(cuid())
+  projectId        Int      @map("project_id")
+  name             String   // User-supplied display name
+  originalFilename String   @map("original_filename")
+  storageKey       String   @map("storage_key") // S3/MinIO object key
+  mimeType         String   @map("mime_type")
+  sizeBytes        BigInt   @map("size_bytes")
+  uploadedBy       String?  @map("uploaded_by") // User id who uploaded
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploader User?   @relation("UserUploadedDocuments", fields: [uploadedBy], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([uploadedBy])
+  @@map("project_documents")
 }
 
 model Model {
