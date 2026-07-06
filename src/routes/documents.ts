@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { DocumentCategory, PrismaClient } from '@prisma/client';
 import type { UploadedFile } from 'express-fileupload';
 import { z } from 'zod';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
@@ -11,43 +11,67 @@ const prisma = new PrismaClient();
 
 router.use(authenticateToken);
 
-// Allow common document/drawing formats only.
-const ALLOWED_MIME_PREFIXES = [
-  'application/pdf',
-  'image/', // PNG / JPG / etc. for drawings/diagrams
-  'application/vnd.openxmlformats-officedocument', // docx, xlsx, pptx
-  'application/msword',
-  'application/vnd.ms-excel',
-  'application/vnd.ms-powerpoint',
-  'application/zip',
-  'application/x-zip-compressed',
-  'text/plain',
-  'application/octet-stream', // generic binary (CAD/DWG often)
-];
-
-const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif',
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-  'dwg', 'dxf', 'dwf', 'skp', 'rvt',
-  'zip', 'txt', 'csv',
-]);
-
 const MAX_DOC_SIZE = Number(process.env.DOCS_MAX_FILE_SIZE || 200 * 1024 * 1024); // 200MB
-
 const docNameSchema = z.string().trim().min(1).max(255);
+const categorySchema = z.nativeEnum(DocumentCategory);
+
+const CATEGORY_RULES: Record<DocumentCategory, { extensions: Set<string>; mimePrefixes: string[] }> = {
+  DRAWINGS: {
+    extensions: new Set([
+      'pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif',
+      'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+      'dwg', 'dxf', 'dwf', 'skp', 'rvt',
+      'zip', 'txt', 'csv',
+    ]),
+    mimePrefixes: [
+      'application/pdf',
+      'image/',
+      'application/vnd.openxmlformats-officedocument',
+      'application/msword',
+      'application/vnd.ms-excel',
+      'application/vnd.ms-powerpoint',
+      'application/zip',
+      'application/x-zip-compressed',
+      'text/plain',
+      'application/octet-stream',
+    ],
+  },
+  LOGISTICS: {
+    extensions: new Set(['pdf']),
+    mimePrefixes: ['application/pdf'],
+  },
+  CNC: {
+    extensions: new Set([
+      'nc', 'cnc', 'tap', 'gcode', 'gc', 'mpg', 'cps', 'iso', 'txt',
+      'csv', 'xls', 'xlsx',
+    ]),
+    mimePrefixes: [
+      'text/plain',
+      'text/csv',
+      'application/csv',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/octet-stream',
+      'application/x-nc',
+      'application/x-gcode',
+    ],
+  },
+};
 
 function getExtension(filename: string): string {
   const idx = filename.lastIndexOf('.');
   return idx >= 0 ? filename.slice(idx + 1).toLowerCase() : '';
 }
 
-function isAllowed(file: UploadedFile): { ok: boolean; reason?: string } {
+function isAllowedForCategory(file: UploadedFile, category: DocumentCategory): { ok: boolean; reason?: string } {
+  const rules = CATEGORY_RULES[category];
   const ext = getExtension(file.name || '');
   const mime = (file.mimetype || '').toLowerCase();
-  const mimeOk = ALLOWED_MIME_PREFIXES.some(prefix => mime === prefix || mime.startsWith(prefix));
-  const extOk = ALLOWED_EXTENSIONS.has(ext);
+  const mimeOk = rules.mimePrefixes.some(prefix => mime === prefix || mime.startsWith(prefix));
+  const extOk = rules.extensions.has(ext);
   if (!mimeOk && !extOk) {
-    return { ok: false, reason: `Unsupported file type "${ext || mime || 'unknown'}"` };
+    const allowed = [...rules.extensions].join(', ');
+    return { ok: false, reason: `Unsupported file type for ${category}. Allowed: ${allowed}` };
   }
   return { ok: true };
 }
@@ -65,7 +89,14 @@ function ensureProjectAccess(projectId: number, userId: string) {
   });
 }
 
-// GET /api/documents/:projectId
+function parseCategoryParam(raw: unknown): DocumentCategory | null {
+  const parsed = categorySchema.safeParse(
+    typeof raw === 'string' ? raw.toUpperCase() : raw
+  );
+  return parsed.success ? parsed.data : null;
+}
+
+// GET /api/documents/:projectId?category=DRAWINGS|LOGISTICS|CNC
 router.get('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
@@ -75,8 +106,16 @@ router.get('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
     const project = await ensureProjectAccess(projectId, req.user.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
+    const category = req.query.category ? parseCategoryParam(req.query.category) : null;
+    if (req.query.category && !category) {
+      return res.status(400).json({ error: 'Invalid category. Use DRAWINGS, LOGISTICS, or CNC.' });
+    }
+
     const docs = await prisma.projectDocument.findMany({
-      where: { projectId },
+      where: {
+        projectId,
+        ...(category ? { category } : {}),
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         uploader: { select: { id: true, name: true, email: true } },
@@ -95,7 +134,7 @@ router.get('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
-// POST /api/documents/:projectId  (multipart: name, file)
+// POST /api/documents/:projectId  (multipart: name, category, file)
 router.post('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
@@ -110,11 +149,13 @@ router.post('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: 'Document name is required (1–255 chars)' });
     }
 
+    const category = parseCategoryParam(req.body?.category) ?? DocumentCategory.DRAWINGS;
+
     const fileField = req.files?.file;
     const file = Array.isArray(fileField) ? fileField[0] : (fileField as UploadedFile | undefined);
     if (!file) return res.status(400).json({ error: 'No file uploaded (field "file")' });
 
-    const allowed = isAllowed(file);
+    const allowed = isAllowedForCategory(file, category);
     if (!allowed.ok) return res.status(400).json({ error: allowed.reason || 'Unsupported file type' });
 
     if (file.size > MAX_DOC_SIZE) {
@@ -124,9 +165,8 @@ router.post('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const ext = getExtension(file.name) || 'bin';
-    const safeKey = `documents/${projectId}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+    const safeKey = `documents/${projectId}/${category.toLowerCase()}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
 
-    // express-fileupload may use temp files; .data is always available too.
     const buffer = file.data && file.data.length > 0
       ? file.data
       : await (await import('node:fs/promises')).readFile(file.tempFilePath);
@@ -136,6 +176,7 @@ router.post('/:projectId', async (req: AuthenticatedRequest, res: Response) => {
     const doc = await prisma.projectDocument.create({
       data: {
         projectId,
+        category,
         name: parsedName.data,
         originalFilename: file.name,
         storageKey: safeKey,
@@ -207,7 +248,7 @@ router.get('/:projectId/:documentId/download', async (req: AuthenticatedRequest,
     });
     if (!doc) return res.status(404).json({ error: 'Document not found' });
 
-    const url = await storageService.getDownloadUrl(doc.storageKey, 60 * 10); // 10 minutes
+    const url = await storageService.getDownloadUrl(doc.storageKey, 60 * 10);
     res.json({ url, name: doc.name, originalFilename: doc.originalFilename });
   } catch (error) {
     logger.error('Error generating document download URL:', error);
@@ -231,7 +272,6 @@ router.delete('/:projectId/:documentId', async (req: AuthenticatedRequest, res: 
     });
     if (!doc) return res.status(404).json({ error: 'Document not found' });
 
-    // Best-effort storage delete; DB row removed regardless.
     try {
       await storageService.deleteFile(doc.storageKey);
     } catch (storageError) {

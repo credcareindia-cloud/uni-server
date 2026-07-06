@@ -108,22 +108,24 @@ model Project {
 }
 
 model ProjectDocument {
-  id               String   @id @default(cuid())
-  projectId        Int      @map("project_id")
-  name             String   // User-supplied display name
-  originalFilename String   @map("original_filename")
-  storageKey       String   @map("storage_key") // S3/MinIO object key
-  mimeType         String   @map("mime_type")
-  sizeBytes        BigInt   @map("size_bytes")
-  uploadedBy       String?  @map("uploaded_by") // User id who uploaded
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  id               String           @id @default(cuid())
+  projectId        Int              @map("project_id")
+  category         DocumentCategory @default(DRAWINGS)
+  name             String           // User-supplied display name
+  originalFilename String           @map("original_filename")
+  storageKey       String           @map("storage_key") // S3/MinIO object key
+  mimeType         String           @map("mime_type")
+  sizeBytes        BigInt           @map("size_bytes")
+  uploadedBy       String?          @map("uploaded_by") // User id who uploaded
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
 
   // Relations
   project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   uploader User?   @relation("UserUploadedDocuments", fields: [uploadedBy], references: [id], onDelete: SetNull)
 
   @@index([projectId])
+  @@index([projectId, category])
   @@index([uploadedBy])
   @@map("project_documents")
 }
@@ -544,4 +546,10 @@ enum ProjectDeletionStatus {
   IN_PROGRESS
   COMPLETED
   FAILED
+}
+
+enum DocumentCategory {
+  DRAWINGS
+  LOGISTICS
+  CNC
 }
