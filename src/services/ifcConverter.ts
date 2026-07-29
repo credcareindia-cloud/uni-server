@@ -3,7 +3,60 @@ import { logger } from '../utils/logger.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
-type StoreyElementRow = { id: string; name: string; type: string; material: string };
+type StoreyElementRow = {
+  id: string;
+  name: string;
+  type: string;
+  material: string;
+  /** Real IFC GlobalId when available (stable across re-exports). */
+  globalId?: string;
+  /** Revit Label / Mark when present in IFC properties (e.g. SH1). */
+  label?: string;
+  /** IFC Tag — often the Revit ElementId as a string. */
+  tag?: string;
+};
+
+/** Read a simple string property (Label / Mark) from IFC property sets for an element. */
+function extractIfcElementLabel(ifcApi: any, modelID: number, elementId: number, WebIFC: any): string | undefined {
+  try {
+    const relIds = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCRELDEFINESBYPROPERTIES);
+    for (let i = 0; i < relIds.size(); i++) {
+      const rel = ifcApi.GetLine(modelID, relIds.get(i));
+      const related = rel.RelatedObjects || [];
+      let applies = false;
+      for (const obj of related) {
+        if (obj?.value === elementId) {
+          applies = true;
+          break;
+        }
+      }
+      if (!applies) continue;
+
+      const psetRef = rel.RelatingPropertyDefinition?.value;
+      if (!psetRef) continue;
+      const pset = ifcApi.GetLine(modelID, psetRef);
+      const props = pset.HasProperties || [];
+      for (const pref of props) {
+        try {
+          const prop = ifcApi.GetLine(modelID, pref.value);
+          const pname = String(prop.Name?.value || '').trim();
+          if (!/^(Label|Mark)$/i.test(pname)) continue;
+          const raw =
+            prop.NominalValue?.value ??
+            prop.Value?.value ??
+            prop.NominalLengthValue?.value;
+          const val = raw != null ? String(raw).trim() : '';
+          if (val) return val;
+        } catch {
+          /* skip property */
+        }
+      }
+    }
+  } catch {
+    /* property walk failed */
+  }
+  return undefined;
+}
 
 /**
  * When IFC lists both a Structural Framing Assembly and a Structural Connections Assembly
@@ -113,7 +166,11 @@ export class IfcConverterService {
    */
   async extractIfcMetadata(ifcBuffer: Buffer): Promise<{
     totalElements: number;
-    storeys: Array<{ name: string; elementCount: number; elements: Array<{ id: string; name: string; type: string; material: string }> }>;
+    storeys: Array<{
+      name: string;
+      elementCount: number;
+      elements: Array<StoreyElementRow>;
+    }>;
     elementTypes: Record<string, number>;
     spatialStructure: any;
   }> {
@@ -134,7 +191,11 @@ export class IfcConverterService {
       logger.info(`✅ IFC file loaded, model ID: ${modelID}`);
 
       // Extract spatial structure
-      const storeys: Array<{ name: string; elementCount: number; elements: Array<{ id: string; name: string; type: string; material: string }> }> = [];
+      const storeys: Array<{
+        name: string;
+        elementCount: number;
+        elements: Array<StoreyElementRow>;
+      }> = [];
       const elementTypes: Record<string, number> = {};
       let totalElements = 0;
 
@@ -222,7 +283,7 @@ export class IfcConverterService {
 
         // Get elements in this storey using spatial containment
         let elementCount = 0;
-        const storeyElements: Array<{ id: string; name: string; type: string; material: string }> = [];
+        const storeyElements: Array<StoreyElementRow> = [];
 
         try {
           const relContained = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE);
@@ -241,6 +302,13 @@ export class IfcConverterService {
                   const rawName = element.Name?.value != null ? String(element.Name.value) : '';
                   const rawTag = element.Tag?.value != null ? String(element.Tag.value) : '';
                   const elementName = rawName || rawTag || `${elementType}-${elementId}`;
+                  const rawGlobalId =
+                    element.GlobalId?.value != null ? String(element.GlobalId.value).trim() : '';
+                  const labelFromPset = extractIfcElementLabel(ifcApi, modelID, elementId, WebIFC);
+                  // Prefer explicit Label/Mark from psets; else IFC Tag when it looks like a short mark (SH1, LB1001)
+                  const label =
+                    labelFromPset ||
+                    (rawTag && /^[A-Z]{1,4}\d/i.test(rawTag.trim()) ? rawTag.trim() : undefined);
 
                   // Extract material information
                   let material = 'N/A';
@@ -267,11 +335,21 @@ export class IfcConverterService {
                     // Material extraction failed, keep N/A
                   }
 
+                  // Prefer IFC Tag; else parse Revit ElementId from Name "...:1452313"
+                  let resolvedTag = rawTag || undefined;
+                  if (!resolvedTag) {
+                    const idFromName = elementName.match(/:(\d+)\s*$/);
+                    if (idFromName) resolvedTag = idFromName[1];
+                  }
+
                   storeyElements.push({
                     id: `${elementId}`,
                     name: elementName,
                     type: elementType,
-                    material: material
+                    material: material,
+                    globalId: rawGlobalId || undefined,
+                    label: label || undefined,
+                    tag: resolvedTag,
                   });
                 } catch (err) {
                   // Skip invalid elements

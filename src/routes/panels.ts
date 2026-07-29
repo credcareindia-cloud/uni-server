@@ -94,8 +94,19 @@ router.get('/:projectId/filter-data', async (req, res) => {
       where: { projectId: parseInt(projectId) },
       select: {
         id: true,
+        name: true,
+        tag: true,
+        objectType: true,
         elementId: true,
+        modelId: true,
         metadata: true,
+        model: {
+          select: {
+            id: true,
+            category: true,
+            isActive: true,
+          },
+        },
         element: {
           select: {
             id: true,
@@ -258,6 +269,7 @@ router.get('/:projectId/all', async (req, res) => {
             id: true,
             ifcType: true,
             globalId: true,
+            expressId: true,
           },
         },
       },
@@ -293,7 +305,9 @@ router.get('/:projectId/hierarchy', async (req, res) => {
         metadata: true,
         model: {
           select: {
-            originalFilename: true
+            originalFilename: true,
+            category: true,
+            displayName: true,
           }
         }
       }
@@ -310,11 +324,16 @@ router.get('/:projectId/hierarchy', async (req, res) => {
         hierarchyMap.set(modelId, {
           modelId,
           modelName,
+          category: p.model?.category || null,
+          displayName: p.model?.displayName || null,
           storeys: new Map()
         });
       }
 
       const model = hierarchyMap.get(modelId);
+      if (model && !model.category && p.model?.category) {
+        model.category = p.model.category;
+      }
       if (!model.storeys.has(storeyName)) {
         model.storeys.set(storeyName, {
           name: storeyName,
@@ -329,6 +348,8 @@ router.get('/:projectId/hierarchy', async (req, res) => {
     const hierarchy = Array.from(hierarchyMap.values()).map((m: any) => ({
       modelId: m.modelId,
       modelName: m.modelName,
+      category: m.category || null,
+      displayName: m.displayName || null,
       storeys: Array.from(m.storeys.values()).sort((a: any, b: any) => a.name.localeCompare(b.name))
     }));
 

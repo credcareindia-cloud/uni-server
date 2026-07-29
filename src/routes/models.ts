@@ -94,6 +94,213 @@ router.get('/:id/metadata', authenticateToken, asyncHandler(async (req: Authenti
 }));
 
 /**
+ * GET /api/models/:id/color-map
+ * Revit system/material colours captured at publish (e.g. DCW = #0000FF).
+ */
+router.get('/:id/color-map', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const model = await prisma.model.findFirst({
+    where: { id },
+    select: {
+      id: true,
+      projectId: true,
+      spatialStructure: true,
+    },
+  });
+
+  if (!model) {
+    throw createApiError('Model not found', 404);
+  }
+
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
+  }
+
+  const spatial = model.spatialStructure as any;
+  const colorMap =
+    spatial && typeof spatial === 'object' && !Array.isArray(spatial) && spatial.colorMap
+      ? spatial.colorMap
+      : null;
+
+  const byGlobalId: Record<string, string> = {
+    ...((colorMap && colorMap.byIfcGuid) || {}),
+  };
+  const byElementId: Record<string, string> = {
+    ...((colorMap && colorMap.byElementId) || {}),
+  };
+
+  // Bridge Revit ElementId → real IFC GlobalId.
+  // Our UniqueId→IfcGuid conversion often differs from Revit's IFC export GUIDs,
+  // but IFC Name usually ends with ":ElementId" (e.g. Pipe Types:Standard:1473931).
+  try {
+    const elements = await prisma.modelElement.findMany({
+      where: { modelId: id },
+      select: { expressId: true, globalId: true, properties: true },
+      take: 100000,
+    });
+    let remapped = 0;
+    for (const el of elements) {
+      const props = (el.properties as Record<string, unknown> | null) || {};
+      const storedColor = typeof props.Color === 'string' ? props.Color : null;
+      const tag = typeof props.Tag === 'string' ? props.Tag : null;
+      const name = typeof props.Name === 'string' ? props.Name : null;
+      const idFromName = name ? name.match(/:(\d+)\s*$/)?.[1] : null;
+      const revitId = (tag && /^\d+$/.test(tag) ? tag : null) || idFromName;
+
+      let color = storedColor;
+      if (!color && revitId && byElementId[revitId]) color = byElementId[revitId];
+
+      if (!color) continue;
+      if (el.globalId) {
+        byGlobalId[el.globalId] = color;
+        remapped++;
+      }
+      if (revitId) byElementId[revitId] = color;
+      if (tag) byElementId[tag] = color;
+    }
+    if (remapped > 0) {
+      logger.info(`color-map ${id}: remapped ${remapped} colours onto IFC GlobalIds via Name/Tag`);
+    }
+  } catch (err) {
+    logger.warn(`color-map element scan failed for ${id}:`, err);
+  }
+
+  res.json({
+    success: true,
+    modelId: id,
+    colorMap,
+    byGlobalId,
+    byElementId,
+    count: Object.keys(byGlobalId).length || Object.keys(byElementId).length,
+  });
+}));
+
+/**
+ * GET /api/models/:id/bimsf-map
+ * Revit BIMSF_Container (panel id) map captured at publish.
+ */
+router.get('/:id/bimsf-map', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const model = await prisma.model.findFirst({
+    where: { id },
+    select: {
+      id: true,
+      projectId: true,
+      category: true,
+      displayName: true,
+      originalFilename: true,
+      spatialStructure: true,
+    },
+  });
+
+  if (!model) {
+    throw createApiError('Model not found', 404);
+  }
+
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
+  }
+
+  const spatial = model.spatialStructure as any;
+  const bimsfMap =
+    spatial && typeof spatial === 'object' && !Array.isArray(spatial) && spatial.bimsfMap
+      ? spatial.bimsfMap
+      : null;
+
+  const byGlobalId: Record<string, string> = {
+    ...((bimsfMap && bimsfMap.byIfcGuid) || {}),
+  };
+  const byElementId: Record<string, string> = {
+    ...((bimsfMap && bimsfMap.byElementId) || {}),
+  };
+
+  // Bridge ElementId → real IFC GlobalId via Name "...:12345" (same as color remap)
+  try {
+    const elements = await prisma.modelElement.findMany({
+      where: { modelId: id },
+      select: { globalId: true, properties: true },
+      take: 100000,
+    });
+    for (const el of elements) {
+      const props = (el.properties as Record<string, unknown> | null) || {};
+      const stored = typeof props.BIMSF_Container === 'string' ? props.BIMSF_Container : null;
+      const tag = typeof props.Tag === 'string' ? props.Tag : null;
+      const name = typeof props.Name === 'string' ? props.Name : null;
+      const idFromName = name ? name.match(/:(\d+)\s*$/)?.[1] : null;
+      const revitId = (tag && /^\d+$/.test(tag) ? tag : null) || idFromName;
+
+      let bimsf = stored;
+      if (!bimsf && revitId && byElementId[revitId]) bimsf = byElementId[revitId];
+      if (!bimsf) continue;
+
+      if (el.globalId) byGlobalId[el.globalId] = bimsf;
+      if (revitId) byElementId[revitId] = bimsf;
+    }
+  } catch (err) {
+    logger.warn(`bimsf-map element scan failed for ${id}:`, err);
+  }
+
+  const normalize = (v: string) => String(v || '').replace(/^\*/, '').trim();
+  const panelsMap = new Map<string, { id: string; displayName: string; bimsf: string; count: number }>();
+  for (const raw of Object.values(byGlobalId)) {
+    const display = normalize(raw) || raw;
+    const key = display.toLowerCase();
+    const existing = panelsMap.get(key);
+    if (existing) existing.count += 1;
+    else panelsMap.set(key, { id: display, displayName: display, bimsf: raw, count: 1 });
+  }
+  // Always include publish-sidecar panels (e.g. FT assemblies) even if GlobalId remap missed some
+  if (bimsfMap?.byPanel && typeof bimsfMap.byPanel === 'object') {
+    for (const [panelId, info] of Object.entries(bimsfMap.byPanel as Record<string, any>)) {
+      const display = normalize((info as any)?.displayName || panelId) || panelId;
+      const key = display.toLowerCase();
+      if (!panelsMap.has(key)) {
+        panelsMap.set(key, {
+          id: display,
+          displayName: display,
+          bimsf: (info as any)?.bimsf || panelId,
+          count: Number((info as any)?.count) || ((info as any)?.elementIds?.length) || 0,
+        });
+      }
+    }
+  } else if (bimsfMap?.panels && Array.isArray(bimsfMap.panels)) {
+    for (const p of bimsfMap.panels) {
+      const display = normalize(p.displayName || p.id || p.bimsf) || p.id;
+      const key = String(display || '').toLowerCase();
+      if (!key || panelsMap.has(key)) continue;
+      panelsMap.set(key, {
+        id: display,
+        displayName: display,
+        bimsf: p.bimsf || p.id,
+        count: p.count || 0,
+      });
+    }
+  }
+
+  res.json({
+    success: true,
+    modelId: id,
+    category: model.category,
+    displayName: model.displayName || model.originalFilename,
+    bimsfMap,
+    byGlobalId,
+    byElementId,
+    panels: [...panelsMap.values()].sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    count: Object.keys(byGlobalId).length || Object.keys(byElementId).length,
+  });
+}));
+
+/**
  * GET /api/models/:id
  * Get model details and metadata
  */
@@ -240,12 +447,64 @@ router.get('/:id/download-url', authenticateToken, asyncHandler(async (req: Auth
     const url = await storageService.getDownloadUrl(model.storageKey, expiresIn);
     return res.json({
       url,
+      // Same-origin stream — works through Vite/Cloudflare when MinIO is only on localhost
+      proxyUrl: `/api/models/${id}/download`,
       expiresIn,
       filename: model.originalFilename
     });
   } catch (error) {
     logger.error(`Failed to generate download URL for model ${id}:`, error);
     throw createApiError('Failed to generate download URL', 500);
+  }
+}));
+
+/**
+ * GET /api/models/:id/download
+ * Stream the .frag file through the API (auth + project access).
+ * Used when MinIO is not reachable from the browser (LAN / Cloudflare tunnel).
+ */
+router.get('/:id/download', authenticateToken, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const model = await prisma.model.findFirst({
+    where: { id },
+    select: {
+      projectId: true,
+      status: true,
+      storageKey: true,
+      originalFilename: true,
+    },
+  });
+
+  if (!model) {
+    throw createApiError('Model not found', 404);
+  }
+
+  const hasAccess = await checkProjectAccess(model.projectId, req.user.id, req.user.role);
+  if (!hasAccess) {
+    throw createApiError('You do not have access to this model', 403);
+  }
+
+  if (model.status !== 'READY') {
+    throw createApiError('Model is not ready for download', 409);
+  }
+
+  try {
+    const fileBuffer = await storageService.downloadFile(model.storageKey);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${model.originalFilename || `${id}.frag`}"`
+    );
+    res.setHeader('Content-Length', fileBuffer.length);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.send(fileBuffer);
+  } catch (error) {
+    logger.error(`Failed to stream model ${id}:`, error);
+    throw createApiError('Failed to download model', 500);
   }
 }));
 

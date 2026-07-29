@@ -101,10 +101,55 @@ model Project {
   statuses      Status[]       // Custom statuses for this project
   members       ProjectMember[] // Project members and roles
   documents     ProjectDocument[] // Project-level documents (PDFs, drawings, etc.)
+  browserRevisions ProjectBrowserRevision[]
+  drawings         ProjectDrawing[]
 
   @@unique([organizationId, displayNumber])
   @@index([organizationId])
   @@map("projects")
+}
+
+/// Revit Project Browser snapshot for one publish revision (multiFileJobId)
+model ProjectBrowserRevision {
+  id           String   @id @default(cuid())
+  projectId    Int      @map("project_id")
+  publishJobId String   @unique @map("publish_job_id")
+  snapshot     Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_browser_revisions")
+}
+
+enum DrawingKind {
+  VIEW
+  SHEET
+}
+
+/// CAD drawing (DXF/DWG) exported from Revit for a publish revision
+model ProjectDrawing {
+  id              String      @id @default(cuid())
+  projectId       Int         @map("project_id")
+  publishJobId    String      @map("publish_job_id")
+  stableKey       String      @map("stable_key")
+  kind            DrawingKind
+  name            String
+  sheetNumber     String?     @map("sheet_number")
+  viewType        String?     @map("view_type")
+  revitElementId  Int?        @map("revit_element_id")
+  dxfStorageKey   String?     @map("dxf_storage_key")
+  dwgStorageKey   String?     @map("dwg_storage_key")
+  sizeBytes       BigInt      @default(0) @map("size_bytes")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([publishJobId, stableKey])
+  @@index([projectId])
+  @@index([publishJobId])
+  @@map("project_drawings")
 }
 
 model ProjectDocument {
@@ -197,6 +242,7 @@ model ModelElement {
   panels Panel[] // Panels linked to this element
 
   @@unique([modelId, expressId])
+  @@index([modelId, globalId])
   @@index([modelId, ifcType])
   @@index([modelId, storey])
   @@map("model_elements")
@@ -502,7 +548,8 @@ enum ModelType {
 enum ModelCategory {
   STRUCTURE   
   MEP         
-  ELECTRICAL 
+  ELECTRICAL
+  ARCHITECTURE
   OTHER       
 }
 

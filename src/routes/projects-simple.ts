@@ -4,6 +4,7 @@ import { prisma } from '../config/database.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
 import { authenticateToken, AuthenticatedRequest, requireProjectRole } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import { storageService } from '../config/storage.js';
 
 const router = Router();
 
@@ -794,6 +795,135 @@ router.get('/:id/panels', requireProjectRole('VIEWER'), asyncHandler(async (req:
 }));
 
 /**
+ * GET /api/projects/:id/bimsf-panels
+ * Unique BIMSF_Container panel IDs across Structure + MEP (and other) models.
+ * Prefer spatialStructure.bimsfMap; fall back to ModelElement.properties.BIMSF_Container.
+ */
+router.get('/:id/bimsf-panels', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const { id } = req.params;
+  const projectId = await resolveProjectId(id);
+  if (!projectId) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  const models = await prisma.model.findMany({
+    where: { projectId, status: 'READY', isActive: true },
+    select: {
+      id: true,
+      category: true,
+      displayName: true,
+      originalFilename: true,
+      spatialStructure: true,
+    },
+    orderBy: { uploadedAt: 'desc' },
+  });
+
+  const normalize = (v: string) => String(v || '').replace(/^\*/, '').trim();
+  type Agg = {
+    id: string;
+    displayName: string;
+    count: number;
+    byCategory: Record<string, number>;
+    modelIds: string[];
+  };
+  const agg = new Map<string, Agg>();
+
+  const bump = (raw: string, category: string | null, modelId: string) => {
+    const display = normalize(raw);
+    if (!display) return;
+    const key = display.toLowerCase();
+    let row = agg.get(key);
+    if (!row) {
+      row = { id: display, displayName: display, count: 0, byCategory: {}, modelIds: [] };
+      agg.set(key, row);
+    }
+    row.count += 1;
+    const cat = category || 'UNCATEGORIZED';
+    row.byCategory[cat] = (row.byCategory[cat] || 0) + 1;
+    if (!row.modelIds.includes(modelId)) row.modelIds.push(modelId);
+  };
+
+  for (const model of models) {
+    const spatial = model.spatialStructure as any;
+    const bimsfMap = spatial?.bimsfMap;
+    let usedMap = false;
+
+    if (bimsfMap?.byPanel && typeof bimsfMap.byPanel === 'object') {
+      for (const [panelId, info] of Object.entries(bimsfMap.byPanel as Record<string, any>)) {
+        const display = normalize((info as any)?.displayName || panelId);
+        if (!display) continue;
+        const count = Number((info as any)?.count) || ((info as any)?.elementIds?.length) || 1;
+        const key = display.toLowerCase();
+        let row = agg.get(key);
+        if (!row) {
+          row = { id: display, displayName: display, count: 0, byCategory: {}, modelIds: [] };
+          agg.set(key, row);
+        }
+        row.count += count;
+        const cat = model.category || 'UNCATEGORIZED';
+        row.byCategory[cat] = (row.byCategory[cat] || 0) + count;
+        if (!row.modelIds.includes(model.id)) row.modelIds.push(model.id);
+        usedMap = true;
+      }
+    } else if (Array.isArray(bimsfMap?.panels) && bimsfMap.panels.length) {
+      for (const p of bimsfMap.panels) {
+        const display = normalize(p.displayName || p.id || p.bimsf);
+        if (!display) continue;
+        const count = Number(p.count) || 1;
+        const key = display.toLowerCase();
+        let row = agg.get(key);
+        if (!row) {
+          row = { id: display, displayName: display, count: 0, byCategory: {}, modelIds: [] };
+          agg.set(key, row);
+        }
+        row.count += count;
+        const cat = model.category || 'UNCATEGORIZED';
+        row.byCategory[cat] = (row.byCategory[cat] || 0) + count;
+        if (!row.modelIds.includes(model.id)) row.modelIds.push(model.id);
+        usedMap = true;
+      }
+    } else if (bimsfMap?.byElementId && typeof bimsfMap.byElementId === 'object') {
+      for (const raw of Object.values(bimsfMap.byElementId as Record<string, string>)) {
+        bump(String(raw), model.category, model.id);
+        usedMap = true;
+      }
+    }
+
+    if (!usedMap) {
+      const elements = await prisma.modelElement.findMany({
+        where: { modelId: model.id },
+        select: { properties: true },
+        take: 100000,
+      });
+      for (const el of elements) {
+        const props = (el.properties as Record<string, unknown> | null) || {};
+        const bimsf = typeof props.BIMSF_Container === 'string' ? props.BIMSF_Container : null;
+        if (bimsf) bump(bimsf, model.category, model.id);
+      }
+    }
+  }
+
+  const panels = [...agg.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  res.json({
+    success: true,
+    projectId,
+    panels,
+    total: panels.length,
+    models: models.map((m) => ({
+      id: m.id,
+      category: m.category,
+      displayName: m.displayName || m.originalFilename,
+      hasBimsfMap: !!(m.spatialStructure as any)?.bimsfMap,
+    })),
+  });
+}));
+
+/**
  * GET /api/projects/:id/models-list
  * Get all models for a project (for model selection dropdown)
  */
@@ -817,7 +947,8 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
     include: {
       modelHistory: {
         where: {
-          status: 'READY' // Only include ready models
+          status: 'READY', // Only include ready models
+          isActive: true,  // Only current versions (hide replaced after republish)
         },
         select: {
           id: true,
@@ -908,5 +1039,383 @@ router.get('/:id/models-list', requireProjectRole('VIEWER'), asyncHandler(async 
     total: models.length
   });
 }));
+
+/**
+ * GET /api/projects/:id/publish-revisions
+ * Group models into publish revisions (by multiFileJobId / shared publish batch).
+ * Latest = ALL currently active models across disciplines (Structure + MEP + Architecture).
+ */
+router.get('/:id/publish-revisions', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const projectId = await resolveProjectId(req.params.id);
+  if (!projectId) {
+    throw createApiError('Invalid project ID', 400);
+  }
+
+  const models = await prisma.model.findMany({
+    where: { projectId, status: 'READY' },
+    select: {
+      id: true,
+      category: true,
+      version: true,
+      isActive: true,
+      originalFilename: true,
+      displayName: true,
+      multiFileJobId: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  type RevModel = (typeof models)[number];
+  const mapModel = (m: RevModel) => ({
+    id: m.id,
+    category: m.category,
+    version: m.version,
+    isActive: m.isActive,
+    name: m.displayName || m.originalFilename,
+    originalFilename: m.originalFilename,
+  });
+
+  const activeModels = models.filter((m) => m.isActive);
+  const inactiveModels = models.filter((m) => !m.isActive);
+
+  const revisions: Array<{
+    id: string;
+    createdAt: Date;
+    version: number;
+    isLatest: boolean;
+    label: string;
+    categories: string[];
+    models: ReturnType<typeof mapModel>[];
+  }> = [];
+
+  // One composite "Latest" with every active discipline model
+  if (activeModels.length > 0) {
+    const createdAt = activeModels.reduce(
+      (max, m) => (m.createdAt > max ? m.createdAt : max),
+      activeModels[0].createdAt
+    );
+    const maxVersion = Math.max(...activeModels.map((m) => m.version || 1));
+    const categories = [...new Set(activeModels.map((m) => m.category))].sort();
+    revisions.push({
+      id: 'latest',
+      createdAt,
+      version: maxVersion,
+      isLatest: true,
+      label: `Latest · ${categories.join(' + ')}`,
+      categories,
+      models: activeModels.map(mapModel),
+    });
+  }
+
+  // Historical batches (inactive models only), by publish job
+  const groups = new Map<string, RevModel[]>();
+  for (const m of inactiveModels) {
+    const key = m.multiFileJobId || `solo_${m.id}`;
+    const list = groups.get(key) || [];
+    list.push(m);
+    groups.set(key, list);
+  }
+
+  for (const [id, groupModels] of groups.entries()) {
+    const createdAt = groupModels.reduce(
+      (max, m) => (m.createdAt > max ? m.createdAt : max),
+      groupModels[0].createdAt
+    );
+    const maxVersion = Math.max(...groupModels.map((m) => m.version || 1));
+    const categories = [...new Set(groupModels.map((m) => m.category))].sort();
+    revisions.push({
+      id,
+      createdAt,
+      version: maxVersion,
+      isLatest: false,
+      label: `v${maxVersion} · ${categories.join(' + ')}`,
+      categories,
+      models: groupModels.map(mapModel),
+    });
+  }
+
+  revisions.sort((a, b) => {
+    if (a.isLatest !== b.isLatest) return a.isLatest ? -1 : 1;
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
+
+  res.json({ revisions, total: revisions.length });
+}));
+
+function mergeBrowserSnapshots(snapshots: any[]): any | null {
+  const valid = snapshots.filter((s) => s && typeof s === 'object');
+  if (valid.length === 0) return null;
+  if (valid.length === 1) return valid[0];
+
+  const base = { ...valid[0] };
+  const viewByKey = new Map<string, any>();
+  const sheetByKey = new Map<string, any>();
+  const scheduleByKey = new Map<string, any>();
+  const legendByKey = new Map<string, any>();
+  const linkByKey = new Map<string, any>();
+  const levelByKey = new Map<string, any>();
+  const phaseByKey = new Map<string, any>();
+  const templateByKey = new Map<string, any>();
+  let familiesSummary: Record<string, number> = {};
+
+  const put = (map: Map<string, any>, key: string, item: any) => {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, item);
+  };
+
+  for (const snap of valid) {
+    for (const v of snap.views || []) {
+      put(
+        viewByKey,
+        String(v.name || '')
+          .trim()
+          .toLowerCase() || `id:${v.id}`,
+        v
+      );
+    }
+    for (const s of snap.sheets || []) {
+      put(
+        sheetByKey,
+        `${String(s.number || '').trim()}|${String(s.name || '')
+          .trim()
+          .toLowerCase()}` || `id:${s.id}`,
+        s
+      );
+    }
+    for (const s of snap.schedules || []) {
+      put(scheduleByKey, String(s.name || '').trim().toLowerCase() || `id:${s.id}`, s);
+    }
+    for (const l of snap.legends || []) {
+      put(legendByKey, String(l.name || '').trim().toLowerCase() || `id:${l.id}`, l);
+    }
+    for (const l of snap.links || []) {
+      put(linkByKey, String(l.name || '').trim().toLowerCase() || `id:${l.id}`, l);
+    }
+    for (const l of snap.levels || []) {
+      put(levelByKey, String(l.name || '').trim().toLowerCase() || `id:${l.id}`, l);
+    }
+    for (const p of snap.phases || []) {
+      put(phaseByKey, String(p.name || '').trim().toLowerCase() || `id:${p.id}`, p);
+    }
+    for (const t of snap.viewTemplates || []) {
+      put(templateByKey, String(t.name || '').trim().toLowerCase() || `id:${t.id}`, t);
+    }
+    if (snap.familiesSummary && typeof snap.familiesSummary === 'object') {
+      for (const [k, v] of Object.entries(snap.familiesSummary)) {
+        familiesSummary[k] = (familiesSummary[k] || 0) + (Number(v) || 0);
+      }
+    }
+    if (snap.projectInfo && !base.projectInfo) {
+      base.projectInfo = snap.projectInfo;
+    }
+  }
+
+  return {
+    ...base,
+    schemaVersion: base.schemaVersion || 1,
+    views: Array.from(viewByKey.values()),
+    sheets: Array.from(sheetByKey.values()),
+    schedules: Array.from(scheduleByKey.values()),
+    legends: Array.from(legendByKey.values()),
+    links: Array.from(linkByKey.values()),
+    levels: Array.from(levelByKey.values()).sort(
+      (a, b) => (Number(a.elevation) || 0) - (Number(b.elevation) || 0)
+    ),
+    phases: Array.from(phaseByKey.values()),
+    viewTemplates: Array.from(templateByKey.values()),
+    familiesSummary,
+  };
+}
+
+/**
+ * GET /api/projects/:id/browser?revisionId=
+ * Revit Project Browser snapshot + drawing list for a publish revision.
+ * revisionId=latest (default): merge browser/drawings from ALL active discipline publishes.
+ */
+router.get('/:id/browser', requireProjectRole('VIEWER'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) throw createApiError('User not authenticated', 401);
+
+  const projectId = await resolveProjectId(req.params.id);
+  if (!projectId) throw createApiError('Invalid project ID', 400);
+
+  let publishJobId = typeof req.query.revisionId === 'string' ? req.query.revisionId : undefined;
+  const wantLatest = !publishJobId || publishJobId === 'latest';
+
+  if (wantLatest) {
+    const activeModels = await prisma.model.findMany({
+      where: { projectId, isActive: true, multiFileJobId: { not: null } },
+      select: { multiFileJobId: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    const jobIds = [
+      ...new Set(
+        activeModels
+          .map((m) => m.multiFileJobId)
+          .filter((id): id is string => !!id)
+      ),
+    ];
+
+    if (jobIds.length === 0) {
+      const latest = await prisma.projectBrowserRevision.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        select: { publishJobId: true },
+      });
+      if (latest) jobIds.push(latest.publishJobId);
+    }
+
+    if (jobIds.length === 0) {
+      return res.json({
+        revisionId: null,
+        snapshot: null,
+        drawings: [],
+        message: 'No Project Browser data published yet',
+      });
+    }
+
+    const browserRevs = await prisma.projectBrowserRevision.findMany({
+      where: { projectId, publishJobId: { in: jobIds } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const drawings = await prisma.projectDrawing.findMany({
+      where: { projectId, publishJobId: { in: jobIds } },
+      orderBy: [{ createdAt: 'desc' }, { kind: 'asc' }, { name: 'asc' }],
+    });
+
+    // Prefer newest drawing when same stableKey appears in multiple discipline publishes
+    const drawingByKey = new Map<string, (typeof drawings)[number]>();
+    for (const d of drawings) {
+      if (!drawingByKey.has(d.stableKey)) drawingByKey.set(d.stableKey, d);
+    }
+
+    const snapshot = mergeBrowserSnapshots(browserRevs.map((r) => r.snapshot));
+
+    return res.json({
+      revisionId: 'latest',
+      snapshot,
+      mergedFrom: jobIds,
+      drawings: Array.from(drawingByKey.values())
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((d) => ({
+          id: d.id,
+          stableKey: d.stableKey,
+          kind: d.kind,
+          name: d.name,
+          sheetNumber: d.sheetNumber,
+          viewType: d.viewType,
+          revitElementId: d.revitElementId,
+          hasDxf: !!d.dxfStorageKey,
+          hasDwg: !!d.dwgStorageKey,
+          sizeBytes: Number(d.sizeBytes),
+        })),
+    });
+  }
+
+  const browserRev = await prisma.projectBrowserRevision.findUnique({
+    where: { publishJobId },
+  });
+
+  const drawings = await prisma.projectDrawing.findMany({
+    where: { projectId, publishJobId },
+    orderBy: [{ kind: 'asc' }, { sheetNumber: 'asc' }, { name: 'asc' }],
+  });
+
+  res.json({
+    revisionId: publishJobId,
+    snapshot: browserRev?.snapshot ?? null,
+    drawings: drawings.map((d) => ({
+      id: d.id,
+      stableKey: d.stableKey,
+      kind: d.kind,
+      name: d.name,
+      sheetNumber: d.sheetNumber,
+      viewType: d.viewType,
+      revitElementId: d.revitElementId,
+      hasDxf: !!d.dxfStorageKey,
+      hasDwg: !!d.dwgStorageKey,
+      sizeBytes: Number(d.sizeBytes),
+    })),
+  });
+}));
+
+/**
+ * GET /api/projects/:id/drawings/:drawingId/download-url?format=dxf|dwg
+ */
+router.get(
+  '/:id/drawings/:drawingId/download-url',
+  requireProjectRole('VIEWER'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) throw createApiError('User not authenticated', 401);
+
+    const projectId = await resolveProjectId(req.params.id);
+    if (!projectId) throw createApiError('Invalid project ID', 400);
+
+    const format = String(req.query.format || 'dxf').toLowerCase();
+    if (format !== 'dxf' && format !== 'dwg') {
+      throw createApiError('format must be dxf or dwg', 400);
+    }
+
+    const drawing = await prisma.projectDrawing.findFirst({
+      where: { id: req.params.drawingId, projectId },
+    });
+    if (!drawing) throw createApiError('Drawing not found', 404);
+
+    const key = format === 'dwg' ? drawing.dwgStorageKey : drawing.dxfStorageKey;
+    if (!key) throw createApiError(`${format.toUpperCase()} not available for this drawing`, 404);
+
+    const url = await storageService.getDownloadUrl(key, 3600);
+    res.json({
+      url,
+      format,
+      fileName: `${drawing.stableKey}.${format}`,
+      drawingId: drawing.id,
+      name: drawing.name,
+    });
+  })
+);
+
+/**
+ * GET /api/projects/:id/drawings/:drawingId/file?format=dxf|dwg
+ * Same-origin stream (avoids MinIO CORS issues in the CAD viewer).
+ */
+router.get(
+  '/:id/drawings/:drawingId/file',
+  requireProjectRole('VIEWER'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) throw createApiError('User not authenticated', 401);
+
+    const projectId = await resolveProjectId(req.params.id);
+    if (!projectId) throw createApiError('Invalid project ID', 400);
+
+    const format = String(req.query.format || 'dxf').toLowerCase();
+    if (format !== 'dxf' && format !== 'dwg') {
+      throw createApiError('format must be dxf or dwg', 400);
+    }
+
+    const drawing = await prisma.projectDrawing.findFirst({
+      where: { id: req.params.drawingId, projectId },
+    });
+    if (!drawing) throw createApiError('Drawing not found', 404);
+
+    const key = format === 'dwg' ? drawing.dwgStorageKey : drawing.dxfStorageKey;
+    if (!key) throw createApiError(`${format.toUpperCase()} not available for this drawing`, 404);
+
+    const buffer = await storageService.downloadFile(key);
+    const fileName = `${drawing.stableKey}.${format}`;
+    res.setHeader(
+      'Content-Type',
+      format === 'dxf' ? 'application/dxf' : 'application/acad'
+    );
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.send(buffer);
+  })
+);
 
 export default router;

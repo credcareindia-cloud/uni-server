@@ -7,6 +7,9 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import fileUpload from 'express-fileupload';
 import dotenv from 'dotenv';
+import os from 'os';
+import path from 'path';
+import { mkdirSync } from 'fs';
 
 import { authRoutes } from './routes/auth.js';
 import projectRoutes from './routes/projects-simple.js';
@@ -25,6 +28,7 @@ import adminRoutes from './routes/admin.js';
 import userRoutes from './routes/user.js';
 import qrCodeRoutes from './routes/qr_routes.js';
 import documentRoutes from './routes/documents.js';
+import { revitPublishRouter } from './routes/revit-publish.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { startModelProcessingQueue } from './queue/index.js';
@@ -49,7 +53,9 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http:/
   .map((o) => o.trim())
   .filter(Boolean);
 
-const allowedOriginPatterns = (process.env.CORS_ORIGIN_REGEX || '')
+const allowedOriginPatterns = (
+  process.env.CORS_ORIGIN_REGEX || 'https://.*\\.trycloudflare\\.com$'
+)
   .split(',')
   .map((p) => p.trim())
   .filter(Boolean)
@@ -87,7 +93,8 @@ const limiter = rateLimit({
     return req.path === '/health' ||
       req.path.startsWith('/api/upload') ||
       req.path.includes('multi-file-upload') ||
-      req.path.includes('model-upload');
+      req.path.includes('model-upload') ||
+      req.path.includes('/api/revit/publish');
   }
 });
 app.use(limiter);
@@ -98,10 +105,16 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // File upload middleware - Use temp files for large IFC files (900MB+)
+const uploadTempDir = process.env.FILE_UPLOAD_TMP_DIR || path.join(os.tmpdir(), 'uniqube-uploads');
+try {
+  mkdirSync(uploadTempDir, { recursive: true });
+} catch {
+  /* ignore */
+}
 app.use(fileUpload({
   limits: { fileSize: 5 * 1024 * 1024 * 1024 }, // 5GB max file size
   useTempFiles: true, // Use temp files instead of memory for large files
-  tempFileDir: '/tmp/', // Temporary directory for uploads
+  tempFileDir: uploadTempDir,
   createParentPath: true,
   abortOnLimit: true,
   responseOnLimit: 'File size limit exceeded',
@@ -142,6 +155,7 @@ app.use('/api', uploadProcessRouter);
 app.use('/api', multiFileUploadRouter);
 // app.use('/api', metadataUpdateRouter);
 app.use('/api', modelDownloadRouter);
+app.use('/api/revit', revitPublishRouter);
 
 // 404 handler
 app.use('*', (req, res) => {

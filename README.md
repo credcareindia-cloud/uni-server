@@ -47,9 +47,7 @@ The API will be available at `http://localhost:4000`
 
 ## 📋 Sample Accounts
 
-After seeding, you can use these accounts:
-- **Admin**: `admin@uniqube.com` / `admin123`
-- **Demo**: `demo@uniqube.com` / `demo123`
+
 
 ## 🏗️ Architecture
 

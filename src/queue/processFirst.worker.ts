@@ -381,7 +381,7 @@ async function run() {
               projectId: result.project.id,
               modelId: result.model.id,
               name: element.name,
-              tag: element.name,
+              tag: element.label || element.name,
               objectType: element.type,
               location: storey.name,
               material: element.material && element.material !== 'N/A' ? element.material : null,
@@ -390,7 +390,9 @@ async function run() {
                 storeyName: storey.name,
                 elementType: element.type,
                 ifcElementId: element.id,
-                material: element.material
+                material: element.material,
+                Label: element.label || null,
+                label: element.label || null,
               }
             });
           }

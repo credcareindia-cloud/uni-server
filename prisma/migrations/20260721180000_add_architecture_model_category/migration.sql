@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "ModelCategory" ADD VALUE IF NOT EXISTS 'ARCHITECTURE';

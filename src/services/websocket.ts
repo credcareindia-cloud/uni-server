@@ -82,3 +82,13 @@ export function emitNotificationToAll(notification: any) {
     io.emit('notification', notification);
     logger.info('Notification emitted to all users');
 }
+
+/** Notify a user that a project model version was replaced (viewer should refresh). */
+export function emitModelUpdated(userId: string, payload: Record<string, unknown>) {
+    if (!io) {
+        logger.warn('Socket.io not initialized, cannot emit model_updated');
+        return;
+    }
+    io.to(`user:${userId}`).emit('model_updated', payload);
+    logger.info(`model_updated emitted to user ${userId}`);
+}

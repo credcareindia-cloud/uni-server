@@ -512,13 +512,15 @@ export function updateMultiFileStatus(
                   elementsToCreate.push({
                     modelId: model.id,
                     expressId: parseInt(element.id) || 0,
-                    globalId: `${model.id}_${element.id}`,
+                    globalId: (element.globalId && String(element.globalId).trim())
+                      || `${model.id}_${element.id}`,
                     ifcType: element.type || 'IfcBuildingElement',
                     storey: storey.name,
                     properties: {
                       Name: element.name,
                       Material: element.material,
-                      Storey: storey.name
+                      Storey: storey.name,
+                      IfcGlobalId: element.globalId || null,
                     }
                   });
                 }
@@ -561,6 +563,7 @@ export function updateMultiFileStatus(
                       storeyName: storey.name,
                       elementType: element.type,
                       ifcElementId: element.id,
+                      ifcGlobalId: element.globalId || null,
                       material: element.material
                     }
                   });

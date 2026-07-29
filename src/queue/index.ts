@@ -17,7 +17,20 @@ export interface IfcJobData {
 function handleMultiFileStatusUpdate(msg: any) {
   logger.info(`🔄 Received multi-file status update: jobId=${msg.jobId}, fileIndex=${msg.fileIndex}, status=${msg.status}, progress=${msg.progress}`);
   try {
-    import('../routes/multi-file-upload.js').then(module => {
+    // Revit publish jobs share the multi-file worker channel
+    import('../routes/revit-publish.js').then(async (revitMod) => {
+      const handled = revitMod.updateRevitPublishStatus?.(
+        msg.jobId,
+        msg.fileIndex,
+        msg.status,
+        msg.progress,
+        msg.message,
+        msg.modelData,
+        msg.error
+      );
+      if (handled) return;
+
+      const module = await import('../routes/multi-file-upload.js');
       if (module.updateMultiFileStatus) {
         logger.info(`📊 Calling updateMultiFileStatus for jobId=${msg.jobId}`);
         module.updateMultiFileStatus(
@@ -33,7 +46,7 @@ function handleMultiFileStatusUpdate(msg: any) {
         logger.error('❌ updateMultiFileStatus function not found in module');
       }
     }).catch(err => {
-      logger.error('❌ Failed to import multi-file-upload module:', err);
+      logger.error('❌ Failed to import multi-file / revit-publish module:', err);
     });
   } catch (err) {
     logger.warn('Failed to update multi-file status:', err);
@@ -188,6 +201,28 @@ function spawnWorker(job: InternalJob | ProcessFirstInternalJob | ProjectDeletio
       logger.info(`✅ Worker finished for ${jobId}`);
     } else {
       logger.error(`❌ Worker exited with code ${code} for ${jobId}`);
+      // Ensure multi-file / revit publish jobs don't poll forever
+      if (isProcessFirst) {
+        const pfJob = job as ProcessFirstInternalJob;
+        if (pfJob.isMultiFile && pfJob.multiFileJobId != null && typeof pfJob.fileIndex === 'number') {
+          handleMultiFileStatusUpdate({
+            jobId: pfJob.multiFileJobId,
+            fileIndex: pfJob.fileIndex,
+            status: 'failed',
+            progress: 0,
+            message: `Worker crashed (exit ${code})`,
+            error: `Worker exited with code ${code}`,
+          });
+        } else {
+          handleProcessingStatusUpdate({
+            processingId: pfJob.processingId,
+            status: 'failed',
+            progress: 0,
+            message: `Worker crashed (exit ${code})`,
+            error: `Worker exited with code ${code}`,
+          });
+        }
+      }
     }
     processQueue();
   });
