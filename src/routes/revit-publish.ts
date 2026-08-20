@@ -200,25 +200,47 @@ router.post(
     let colorMaps: any[] = [];
     if (body.colorMaps) {
       try {
-        const parsed =
-          typeof body.colorMaps === 'string' ? JSON.parse(body.colorMaps) : body.colorMaps;
+        const raw = body.colorMaps;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (Array.isArray(parsed)) colorMaps = parsed;
         else if (parsed && typeof parsed === 'object') colorMaps = [parsed];
-      } catch {
-        logger.warn('Invalid colorMaps JSON on revit publish');
+        logger.info(
+          `Revit publish colorMaps: ${colorMaps.length} map(s), fieldChars=${
+            typeof raw === 'string' ? raw.length : 'object'
+          }`
+        );
+      } catch (err) {
+        const raw = body.colorMaps;
+        logger.warn(
+          `Invalid colorMaps JSON on revit publish (chars=${
+            typeof raw === 'string' ? raw.length : typeof raw
+          }): ${err instanceof Error ? err.message : err}`
+        );
       }
     }
 
     let bimsfMaps: any[] = [];
     if (body.bimsfMaps) {
       try {
-        const parsed =
-          typeof body.bimsfMaps === 'string' ? JSON.parse(body.bimsfMaps) : body.bimsfMaps;
+        const raw = body.bimsfMaps;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (Array.isArray(parsed)) bimsfMaps = parsed;
         else if (parsed && typeof parsed === 'object') bimsfMaps = [parsed];
-      } catch {
-        logger.warn('Invalid bimsfMaps JSON on revit publish');
+        logger.info(
+          `Revit publish bimsfMaps: ${bimsfMaps.length} map(s), fieldChars=${
+            typeof raw === 'string' ? raw.length : 'object'
+          }, panels=${bimsfMaps.reduce((n, m) => n + (m?.panelCount || m?.panels?.length || 0), 0)}`
+        );
+      } catch (err) {
+        const raw = body.bimsfMaps;
+        logger.warn(
+          `Invalid bimsfMaps JSON on revit publish (chars=${
+            typeof raw === 'string' ? raw.length : typeof raw
+          }): ${err instanceof Error ? err.message : err}`
+        );
       }
+    } else {
+      logger.warn('Revit publish: no bimsfMaps field on request');
     }
 
     const categoriesFromBody = parseCategories(body, modelFiles.length);

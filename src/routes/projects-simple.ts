@@ -819,7 +819,7 @@ router.get('/:id/bimsf-panels', requireProjectRole('VIEWER'), asyncHandler(async
       originalFilename: true,
       spatialStructure: true,
     },
-    orderBy: { uploadedAt: 'desc' },
+    orderBy: { createdAt: 'desc' },
   });
 
   const normalize = (v: string) => String(v || '').replace(/^\*/, '').trim();

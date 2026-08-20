@@ -112,7 +112,10 @@ try {
   /* ignore */
 }
 app.use(fileUpload({
-  limits: { fileSize: 5 * 1024 * 1024 * 1024 }, // 5GB max file size
+  limits: {
+    fileSize: 5 * 1024 * 1024 * 1024, // 5GB files (IFC)
+    fieldSize: 50 * 1024 * 1024, // 50MB form fields (BIMSF / colour JSON)
+  },
   useTempFiles: true, // Use temp files instead of memory for large files
   tempFileDir: uploadTempDir,
   createParentPath: true,
