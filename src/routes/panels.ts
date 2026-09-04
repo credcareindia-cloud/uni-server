@@ -3,6 +3,13 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import {
+  collectBimsfSets,
+  groupRowsByBimsf,
+  loadBimsfLookups,
+  projectHasBimsfMaps,
+  resolveBimsfMark,
+} from '../utils/bimsfPanel.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -40,9 +47,14 @@ router.get('/:projectId/filters', async (req, res) => {
     const panels = await prisma.panel.findMany({
       where: { projectId: parseInt(projectId) },
       select: {
+        name: true,
+        tag: true,
         objectType: true,
         location: true,
         material: true,
+        metadata: true,
+        modelId: true,
+        element: { select: { globalId: true, properties: true } },
         groups: {
           include: {
             group: true
@@ -61,16 +73,27 @@ router.get('/:projectId/filters', async (req, res) => {
     });
 
     const groups = Array.from(groupsMap.values());
-    const objectTypes = [...new Set(panels.map(p => p.objectType).filter(Boolean))];
+    const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
+    const groupByBimsf = projectHasBimsfMaps(lookups);
+    const objectTypes = groupByBimsf
+      ? ['BIMSF Panel']
+      : [...new Set(panels.map(p => p.objectType).filter(Boolean))];
     const locations = [...new Set(panels.map(p => p.location).filter(Boolean))];
     const materials = [...new Set(panels.map(p => p.material).filter(Boolean))];
+    const totalPanels = groupByBimsf
+      ? collectBimsfSets(
+          panels.map((p) => ({ ...p, groups: [] })),
+          lookups
+        ).size
+      : panels.length;
 
     res.json({
       objectTypes,
       locations,
       materials,
       groups,
-      totalPanels: panels.length
+      totalPanels,
+      groupedBy: groupByBimsf ? 'bimsf' : 'members',
     });
   } catch (error) {
     console.error('Error fetching panel filters:', error);
@@ -211,6 +234,9 @@ router.get('/:projectId/all', async (req, res) => {
   try {
     const { projectId } = req.params;
 
+    const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
+    const groupByBimsf = projectHasBimsfMaps(lookups);
+
     const panels = await prisma.panel.findMany({
       where: { projectId: parseInt(projectId) },
       select: {
@@ -262,6 +288,7 @@ router.get('/:projectId/all', async (req, res) => {
           select: {
             id: true,
             originalFilename: true,
+            category: true,
           },
         },
         element: {
@@ -270,6 +297,7 @@ router.get('/:projectId/all', async (req, res) => {
             ifcType: true,
             globalId: true,
             expressId: true,
+            properties: true,
           },
         },
       },
@@ -279,11 +307,31 @@ router.get('/:projectId/all', async (req, res) => {
       ],
     });
 
-    logger.debug('Fetched all panels', { count: panels.length, projectId });
+    const grouped = groupByBimsf
+      ? groupRowsByBimsf(panels, (panel) => resolveBimsfMark(panel, lookups)).map((row) => ({
+          ...row,
+          name: row.panelMark,
+          tag: row.panelMark,
+          objectType: 'BIMSF Panel',
+          totalPanels: row.memberCount,
+          metadata: {
+            ...((row.metadata && typeof row.metadata === 'object' ? row.metadata : {}) as object),
+            BIMSF_Container: row.panelMark,
+            memberIds: row.memberIds,
+          },
+        }))
+      : panels;
+
+    logger.debug('Fetched all panels', {
+      count: grouped.length,
+      projectId,
+      groupedBy: groupByBimsf ? 'bimsf' : 'members',
+    });
 
     res.json({
-      panels,
-      total: panels.length,
+      panels: grouped,
+      total: grouped.length,
+      groupedBy: groupByBimsf ? 'bimsf' : 'members',
     });
   } catch (error) {
     console.error('Error fetching all panels:', error);
@@ -567,6 +615,8 @@ router.get('/:projectId', async (req, res) => {
     const pageNum = parseInt(page as string);
     const limitNum = Math.min(parseInt(limit as string), 100); // Max 100 per page
     const skip = (pageNum - 1) * limitNum;
+    const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
+    const groupByBimsf = projectHasBimsfMaps(lookups);
 
     const where: any = {
       projectId: parseInt(projectId),
@@ -637,7 +687,7 @@ router.get('/:projectId', async (req, res) => {
       };
     }
 
-    if (search) {
+    if (search && !groupByBimsf) {
       where.OR = [
         { name: { contains: search as string, mode: 'insensitive' } },
         { tag: { contains: search as string, mode: 'insensitive' } },
@@ -664,53 +714,64 @@ router.get('/:projectId', async (req, res) => {
         : [connectionFilter];
     }
 
-    // Get total count for pagination (database count)
-    const totalCount = await prisma.panel.count({ where });
-
-    // Get total panels from model metadata (actual FRAG file count)
-    let totalPanelsFromMetadata = totalCount;
-    try {
-      const project = await prisma.project.findUnique({
-        where: { id: parseInt(projectId) },
-        include: {
-          currentModel: {
-            select: { spatialStructure: true }
-          }
-        }
-      });
-
-      if (project?.currentModel?.spatialStructure) {
-        // Prisma automatically parses JSON fields, no need to JSON.parse()
-        const spatialData = project.currentModel.spatialStructure as any;
-        totalPanelsFromMetadata = spatialData.totalPanels || totalCount;
-      }
-    } catch (error) {
-      console.error('Error parsing spatial structure:', error);
-    }
-
-    // Natural-sort panels by name across the whole result set so pagination is
-    // consistent (e.g. "Be1, Be2, …, Be10, Be11" instead of lexicographic
-    // "Be1, Be10, Be11, Be2"). We do this in two steps:
-    //   1. Cheap query of (id, name) for ALL matching rows -> sort -> slice.
-    //   2. Full fetch only for the page's IDs, then reorder.
-    const idAndName = await prisma.panel.findMany({
-      where,
-      select: { id: true, name: true, createdAt: true },
-    });
-
     const naturalCompare = (a: string, b: string) =>
       (a || '').localeCompare(b || '', undefined, { numeric: true, sensitivity: 'base' });
 
-    idAndName.sort((a, b) => {
-      const byName = naturalCompare(a.name || '', b.name || '');
-      if (byName !== 0) return byName;
-      // Stable secondary key for rows with identical names.
-      const aTs = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bTs = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return aTs - bTs;
-    });
+    let pageIds: string[] = [];
+    let totalCount = 0;
+    const bimsfByRepId = new Map<string, { panelMark: string; memberIds: string[]; memberCount: number }>();
 
-    const pageIds = idAndName.slice(skip, skip + limitNum).map(r => r.id);
+    if (groupByBimsf) {
+      const candidates = await prisma.panel.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          tag: true,
+          metadata: true,
+          modelId: true,
+          createdAt: true,
+          element: { select: { globalId: true, properties: true } },
+        },
+      });
+      let grouped = groupRowsByBimsf(candidates, (panel) => resolveBimsfMark(panel, lookups));
+      if (search) {
+        const q = String(search).toLowerCase();
+        grouped = grouped.filter(
+          (row) =>
+            row.panelMark.toLowerCase().includes(q) ||
+            (row.name || '').toLowerCase().includes(q) ||
+            (row.tag || '').toLowerCase().includes(q)
+        );
+      }
+      grouped.sort((a, b) => {
+        const byMark = naturalCompare(a.panelMark, b.panelMark);
+        if (byMark !== 0) return byMark;
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      });
+      totalCount = grouped.length;
+      const pageGroups = grouped.slice(skip, skip + limitNum);
+      pageIds = pageGroups.map((row) => row.id);
+      for (const row of pageGroups) {
+        bimsfByRepId.set(row.id, {
+          panelMark: row.panelMark,
+          memberIds: row.memberIds,
+          memberCount: row.memberCount,
+        });
+      }
+    } else {
+      totalCount = await prisma.panel.count({ where });
+      const idAndName = await prisma.panel.findMany({
+        where,
+        select: { id: true, name: true, createdAt: true },
+      });
+      idAndName.sort((a, b) => {
+        const byName = naturalCompare(a.name || '', b.name || '');
+        if (byName !== 0) return byName;
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      });
+      pageIds = idAndName.slice(skip, skip + limitNum).map((r) => r.id);
+    }
 
     let panels: any[] = [];
     if (pageIds.length > 0) {
@@ -755,13 +816,14 @@ router.get('/:projectId', async (req, res) => {
               },
             },
           },
-          model: { select: { id: true, originalFilename: true } },
+          model: { select: { id: true, originalFilename: true, category: true } },
           element: {
             select: {
               id: true,
               ifcType: true,
               globalId: true,
               expressId: true,
+              properties: true,
             },
           },
           statusHistory: {
@@ -776,6 +838,26 @@ router.get('/:projectId', async (req, res) => {
 
       const panelMap = new Map(fullPanels.map(p => [p.id, p]));
       panels = pageIds.map(id => panelMap.get(id)).filter(Boolean);
+      if (groupByBimsf) {
+        panels = panels.map((panel) => {
+          const grouped = bimsfByRepId.get(panel.id);
+          if (!grouped) return panel;
+          return {
+            ...panel,
+            name: grouped.panelMark,
+            tag: grouped.panelMark,
+            objectType: 'BIMSF Panel',
+            totalPanels: grouped.memberCount,
+            memberIds: grouped.memberIds,
+            memberCount: grouped.memberCount,
+            metadata: {
+              ...((panel.metadata && typeof panel.metadata === 'object' ? panel.metadata : {}) as object),
+              BIMSF_Container: grouped.panelMark,
+              memberIds: grouped.memberIds,
+            },
+          };
+        });
+      }
     }
 
     res.json({
@@ -783,10 +865,11 @@ router.get('/:projectId', async (req, res) => {
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total: totalCount, // Panels in database (displayed)
-        totalFromMetadata: totalPanelsFromMetadata, // Total panels from FRAG file
-        totalPages: Math.ceil(totalCount / limitNum),
+        total: totalCount,
+        totalFromMetadata: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum) || 1,
       },
+      groupedBy: groupByBimsf ? 'bimsf' : 'members',
     });
   } catch (error) {
     console.error('Error fetching panels:', error);
@@ -799,30 +882,48 @@ router.get('/:projectId', async (req, res) => {
 router.get('/:projectId/health', async (req, res) => {
   try {
     const { projectId } = req.params;
+    const projectIdInt = parseInt(projectId);
+    const lookups = await loadBimsfLookups(prisma, projectIdInt);
 
-    // Get total panels count
+    if (projectHasBimsfMaps(lookups)) {
+      const rows = await prisma.panel.findMany({
+        where: { projectId: projectIdInt },
+        select: {
+          name: true,
+          tag: true,
+          metadata: true,
+          modelId: true,
+          element: { select: { globalId: true, properties: true } },
+          groups: { select: { groupId: true } },
+          statuses: { select: { statusId: true } },
+        },
+      });
+      const sets = collectBimsfSets(rows, lookups);
+      const totalPanels = sets.size;
+      let panelsWithoutGroups = 0;
+      let panelsWithoutStatus = 0;
+      for (const entry of sets.values()) {
+        if (entry.groupIds.size === 0) panelsWithoutGroups += 1;
+        if (entry.statusIds.size === 0) panelsWithoutStatus += 1;
+      }
+      return res.json({
+        totalPanels,
+        panelsWithoutGroups,
+        panelsWithoutStatus,
+        panelsWithGroups: totalPanels - panelsWithoutGroups,
+        panelsWithStatus: totalPanels - panelsWithoutStatus,
+        groupedBy: 'bimsf',
+      });
+    }
+
     const totalPanels = await prisma.panel.count({
-      where: { projectId: parseInt(projectId) },
+      where: { projectId: projectIdInt },
     });
-
-    // Count panels without any groups
     const panelsWithoutGroups = await prisma.panel.count({
-      where: {
-        projectId: parseInt(projectId),
-        groups: {
-          none: {}
-        }
-      }
+      where: { projectId: projectIdInt, groups: { none: {} } },
     });
-
-    // Count panels without any statuses
     const panelsWithoutStatus = await prisma.panel.count({
-      where: {
-        projectId: parseInt(projectId),
-        statuses: {
-          none: {}
-        }
-      }
+      where: { projectId: projectIdInt, statuses: { none: {} } },
     });
 
     res.json({
@@ -830,7 +931,8 @@ router.get('/:projectId/health', async (req, res) => {
       panelsWithoutGroups,
       panelsWithoutStatus,
       panelsWithGroups: totalPanels - panelsWithoutGroups,
-      panelsWithStatus: totalPanels - panelsWithoutStatus
+      panelsWithStatus: totalPanels - panelsWithoutStatus,
+      groupedBy: 'members',
     });
   } catch (error) {
     console.error('Error fetching panel health statistics:', error);
@@ -844,56 +946,91 @@ router.get('/:projectId/statistics', async (req, res) => {
   try {
     const { projectId } = req.params;
     const projectIdInt = parseInt(projectId);
+    const lookups = await loadBimsfLookups(prisma, projectIdInt);
 
-    // Get total panels count
+    const statuses = await prisma.status.findMany({
+      where: { projectId: projectIdInt },
+    });
+    const groups = await prisma.group.findMany({
+      where: { projectId: projectIdInt },
+    });
+
+    if (projectHasBimsfMaps(lookups)) {
+      const rows = await prisma.panel.findMany({
+        where: { projectId: projectIdInt },
+        select: {
+          name: true,
+          tag: true,
+          metadata: true,
+          modelId: true,
+          element: { select: { globalId: true, properties: true } },
+          groups: { select: { groupId: true } },
+          statuses: { select: { statusId: true } },
+        },
+      });
+      const sets = collectBimsfSets(rows, lookups);
+      const statusCountsById: Record<string, number> = {};
+      const groupCountsById: Record<string, number> = {};
+      for (const status of statuses) statusCountsById[status.id] = 0;
+      for (const group of groups) groupCountsById[group.id] = 0;
+      for (const entry of sets.values()) {
+        for (const statusId of entry.statusIds) {
+          if (statusCountsById[statusId] !== undefined) statusCountsById[statusId] += 1;
+        }
+        for (const groupId of entry.groupIds) {
+          if (groupCountsById[groupId] !== undefined) groupCountsById[groupId] += 1;
+        }
+      }
+      return res.json({
+        totalPanels: sets.size,
+        statusCountsById,
+        groupCountsById,
+        statusDistribution: statuses.reduce((acc, status) => {
+          acc[status.name] = statusCountsById[status.id] || 0;
+          return acc;
+        }, {} as Record<string, number>),
+        groupDistribution: groups.map((group) => ({
+          groupId: group.id,
+          groupName: group.name,
+          count: groupCountsById[group.id] || 0,
+        })),
+        groupedBy: 'bimsf',
+      });
+    }
+
     const totalPanels = await prisma.panel.count({
       where: { projectId: projectIdInt },
     });
-
-    // Get all statuses with panel counts
-    const statuses = await prisma.status.findMany({
+    const statusesWithCount = await prisma.status.findMany({
       where: { projectId: projectIdInt },
-      include: {
-        _count: {
-          select: { panelStatuses: true }
-        }
-      }
+      include: { _count: { select: { panelStatuses: true } } },
+    });
+    const groupsWithCount = await prisma.group.findMany({
+      where: { projectId: projectIdInt },
+      include: { _count: { select: { panelGroups: true } } },
     });
 
-    // Get all groups with panel counts
-    const groups = await prisma.group.findMany({
-      where: { projectId: projectIdInt },
-      include: {
-        _count: {
-          select: { panelGroups: true }
-        }
-      }
-    });
-
-    const statistics = {
+    res.json({
       totalPanels,
-      // Return counts by ID for easy lookup
-      statusCountsById: statuses.reduce((acc, status) => {
+      statusCountsById: statusesWithCount.reduce((acc, status) => {
         acc[status.id] = status._count.panelStatuses;
         return acc;
       }, {} as Record<string, number>),
-      groupCountsById: groups.reduce((acc, group) => {
+      groupCountsById: groupsWithCount.reduce((acc, group) => {
         acc[group.id] = group._count.panelGroups;
         return acc;
       }, {} as Record<string, number>),
-      // Legacy formats for backward compatibility
-      statusDistribution: statuses.reduce((acc, status) => {
+      statusDistribution: statusesWithCount.reduce((acc, status) => {
         acc[status.name] = status._count.panelStatuses;
         return acc;
       }, {} as Record<string, number>),
-      groupDistribution: groups.map(group => ({
+      groupDistribution: groupsWithCount.map((group) => ({
         groupId: group.id,
         groupName: group.name,
-        count: group._count.panelGroups
-      }))
-    };
-
-    res.json(statistics);
+        count: group._count.panelGroups,
+      })),
+      groupedBy: 'members',
+    });
   } catch (error) {
     console.error('Error fetching panel statistics:', error);
     res.status(500).json({ error: 'Failed to fetch panel statistics' });

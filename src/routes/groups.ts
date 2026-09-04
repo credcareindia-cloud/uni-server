@@ -3,6 +3,11 @@ import { PrismaClient, GroupStatus } from '@prisma/client';
 import { z } from 'zod';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import {
+  groupRelatedPanels,
+  loadBimsfLookups,
+  projectHasBimsfMaps,
+} from '../utils/bimsfPanel.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -66,12 +71,15 @@ router.get('/:projectId', async (req, res) => {
                 tag: true,
                 objectType: true,
                 elementId: true,
-                metadata: true, // Contains ifcElementId from IFC model
+                modelId: true,
+                metadata: true,
                 element: {
                   select: {
                     id: true,
                     globalId: true,
+                    expressId: true,
                     ifcType: true,
+                    properties: true,
                   },
                 },
               },
@@ -89,8 +97,18 @@ router.get('/:projectId', async (req, res) => {
       take: limitNum,
     });
 
+    const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
+    const groupByBimsf = projectHasBimsfMaps(lookups);
+    const grouped = groupByBimsf
+      ? groups.map((group) => ({
+          ...group,
+          panelGroups: groupRelatedPanels(group.panelGroups, lookups),
+        }))
+      : groups;
+
     res.json({
-      groups,
+      groups: grouped,
+      groupedBy: groupByBimsf ? 'bimsf' : 'members',
       pagination: {
         page: pageNum,
         limit: limitNum,

@@ -2,6 +2,11 @@ import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import {
+  groupRelatedPanels,
+  loadBimsfLookups,
+  projectHasBimsfMaps,
+} from '../utils/bimsfPanel.js';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -322,12 +327,15 @@ router.get('/:projectId', async (req, res) => {
                 tag: true,
                 objectType: true,
                 elementId: true,
+                modelId: true,
                 metadata: true,
                 element: {
                   select: {
                     id: true,
                     globalId: true,
+                    expressId: true,
                     ifcType: true,
+                    properties: true,
                   },
                 },
               },
@@ -337,13 +345,20 @@ router.get('/:projectId', async (req, res) => {
       }
     });
 
-    // Format response to include panel count
-    const statusesWithCount = statuses.map(status => ({
-      ...status,
-      panelCount: status._count.panelStatuses
-    }));
+    const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
+    const groupByBimsf = projectHasBimsfMaps(lookups);
+    const statusesWithCount = statuses.map((status) => {
+      const panelStatuses = groupByBimsf
+        ? groupRelatedPanels(status.panelStatuses, lookups)
+        : status.panelStatuses;
+      return {
+        ...status,
+        panelStatuses,
+        panelCount: panelStatuses.length,
+      };
+    });
 
-    res.json({ statuses: statusesWithCount });
+    res.json({ statuses: statusesWithCount, groupedBy: groupByBimsf ? 'bimsf' : 'members' });
   } catch (error) {
     console.error('Error fetching custom statuses:', error);
     res.status(500).json({ error: 'Failed to fetch custom statuses' });
