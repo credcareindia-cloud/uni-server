@@ -382,6 +382,22 @@ export class IfcConverterService {
 
       logger.info(`📊 Total elements: ${totalElements}, Element types: ${Object.keys(elementTypes).length}, Storeys: ${storeys.length}`);
 
+      const doorCount = Object.entries(elementTypes).reduce((n, [type, count]) => {
+        return /door/i.test(type) ? n + Number(count || 0) : n;
+      }, 0);
+      const windowCount = Object.entries(elementTypes).reduce((n, [type, count]) => {
+        return /window/i.test(type) ? n + Number(count || 0) : n;
+      }, 0);
+      const wallCount = Object.entries(elementTypes).reduce((n, [type, count]) => {
+        return /wall/i.test(type) ? n + Number(count || 0) : n;
+      }, 0);
+      if (wallCount > 0 && doorCount === 0 && windowCount === 0) {
+        logger.warn(
+          `⚠️ Architecture-like IFC has ${wallCount} wall(s) but 0 IfcDoor / IfcWindow. ` +
+            `Revit likely exported a view with Doors/Windows hidden — openings will not show in Uniqube.`
+        );
+      }
+
       // Close model
       ifcApi.CloseModel(modelID);
 

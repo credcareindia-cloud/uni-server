@@ -22,6 +22,7 @@ const updateProjectSchema = z.object({
   name: z.string().min(1, 'Project name is required').max(255, 'Project name too long').optional(),
   description: z.string().optional(),
   status: z.enum(['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  metadata: z.record(z.any()).optional(),
 });
 
 const querySchema = z.object({
@@ -245,6 +246,7 @@ router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: Authen
     status: project.status,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
+    metadata: project.metadata ?? null,
     currentModel: project.currentModel ? {
       ...project.currentModel,
       sizeBytes: Number(project.currentModel.sizeBytes)
@@ -297,12 +299,51 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
     throw createApiError('Invalid project ID', 400);
   }
 
+  const existing = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { metadata: true },
+  });
+  if (!existing) {
+    throw createApiError('Project not found', 404);
+  }
+
+  const existingMeta =
+    existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+      ? (existing.metadata as Record<string, unknown>)
+      : {};
+  const incomingMeta =
+    updateData.metadata && typeof updateData.metadata === 'object' && !Array.isArray(updateData.metadata)
+      ? (updateData.metadata as Record<string, unknown>)
+      : null;
+
   const project = await prisma.project.update({
     where: { id: projectId },
     data: {
       ...(updateData.name && { name: updateData.name }),
       ...(updateData.description !== undefined && { description: updateData.description }),
-      ...(updateData.status && { status: updateData.status })
+      ...(updateData.status && { status: updateData.status }),
+      ...(incomingMeta
+        ? {
+            metadata: {
+              ...existingMeta,
+              ...incomingMeta,
+              ...(incomingMeta.dashboard &&
+              typeof incomingMeta.dashboard === 'object' &&
+              !Array.isArray(incomingMeta.dashboard)
+                ? {
+                    dashboard: {
+                      ...((existingMeta.dashboard &&
+                      typeof existingMeta.dashboard === 'object' &&
+                      !Array.isArray(existingMeta.dashboard)
+                        ? existingMeta.dashboard
+                        : {}) as Record<string, unknown>),
+                      ...(incomingMeta.dashboard as Record<string, unknown>),
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
     },
     include: {
       _count: {
@@ -326,6 +367,7 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
     status: project.status,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
+    metadata: project.metadata ?? null,
     stats: {
       totalModels: project._count.modelHistory,
       totalGroups: project._count.groups,

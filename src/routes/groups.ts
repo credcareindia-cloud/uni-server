@@ -99,12 +99,16 @@ router.get('/:projectId', async (req, res) => {
 
     const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
     const groupByBimsf = projectHasBimsfMaps(lookups);
-    const grouped = groupByBimsf
-      ? groups.map((group) => ({
-          ...group,
-          panelGroups: groupRelatedPanels(group.panelGroups, lookups),
-        }))
-      : groups;
+    const grouped = groups.map((group) => {
+      const panelGroups = groupByBimsf
+        ? groupRelatedPanels(group.panelGroups, lookups)
+        : group.panelGroups;
+      return {
+        ...group,
+        panelGroups,
+        panelCount: panelGroups.length,
+      };
+    });
 
     res.json({
       groups: grouped,
@@ -180,17 +184,7 @@ router.get('/:projectId/:groupId/panels', async (req, res) => {
     const limitNum = Math.min(parseInt(limit as string), 100);
     const skip = (pageNum - 1) * limitNum;
 
-    // Get total count of panels in this group
-    const totalCount = await prisma.panelGroup.count({
-      where: {
-        groupId: groupId,
-        group: {
-          projectId: parseInt(projectId),
-        },
-      },
-    });
-
-    // Get panels with full details including statuses and other groups
+    // Load all memberships first so BIMSF collapse is correct before paging
     const panelGroups = await prisma.panelGroup.findMany({
       where: {
         groupId: groupId,
@@ -201,6 +195,15 @@ router.get('/:projectId/:groupId/panels', async (req, res) => {
       include: {
         panel: {
           include: {
+            element: {
+              select: {
+                id: true,
+                globalId: true,
+                expressId: true,
+                ifcType: true,
+                properties: true,
+              },
+            },
             statuses: {
               include: {
                 status: {
@@ -232,44 +235,57 @@ router.get('/:projectId/:groupId/panels', async (req, res) => {
           name: 'asc',
         },
       },
-      skip,
-      take: limitNum,
     });
 
-    // Transform the data to match frontend expectations with all panel fields
-    const panels = panelGroups.map(pg => ({
-      id: pg.panel.id,
-      projectId: pg.panel.projectId,
-      modelId: pg.panel.modelId,
-      elementId: pg.panel.elementId,
-      name: pg.panel.name,
-      tag: pg.panel.tag,
-      objectType: pg.panel.objectType,
-      dimensions: pg.panel.dimensions,
-      location: pg.panel.location,
-      material: pg.panel.material,
-      weight: pg.panel.weight,
-      area: pg.panel.area,
-      status: pg.panel.status,
-      groupId: pg.panel.groupId,
-      productionDate: pg.panel.productionDate,
-      shippingDate: pg.panel.shippingDate,
-      installationDate: pg.panel.installationDate,
-      notes: pg.panel.notes,
-      metadata: pg.panel.metadata,
-      createdAt: pg.panel.createdAt,
-      updatedAt: pg.panel.updatedAt,
-      statuses: pg.panel.statuses,
-      groups: pg.panel.groups,
-    }));
+    const lookups = await loadBimsfLookups(prisma, parseInt(projectId));
+    const groupByBimsf = projectHasBimsfMaps(lookups);
+    const collapsed = groupByBimsf
+      ? groupRelatedPanels(panelGroups, lookups)
+      : panelGroups;
+
+    const allPanels = collapsed.map((pg) => {
+      const panel = pg.panel as any;
+      return {
+        id: panel.id,
+        projectId: panel.projectId,
+        modelId: panel.modelId,
+        elementId: panel.elementId,
+        name: panel.name,
+        tag: panel.tag,
+        objectType: panel.objectType,
+        dimensions: panel.dimensions,
+        location: panel.location,
+        material: panel.material,
+        weight: panel.weight,
+        area: panel.area,
+        status: panel.status,
+        groupId: panel.groupId,
+        productionDate: panel.productionDate,
+        shippingDate: panel.shippingDate,
+        installationDate: panel.installationDate,
+        notes: panel.notes,
+        metadata: panel.metadata,
+        createdAt: panel.createdAt,
+        updatedAt: panel.updatedAt,
+        statuses: panel.statuses,
+        groups: panel.groups,
+        panelMark: panel.panelMark,
+        memberCount: panel.memberCount,
+        memberIds: panel.memberIds,
+      };
+    });
+
+    const totalCount = allPanels.length;
+    const panels = allPanels.slice(skip, skip + limitNum);
 
     res.json({
       panels,
+      groupedBy: groupByBimsf ? 'bimsf' : 'members',
       pagination: {
         page: pageNum,
         limit: limitNum,
         total: totalCount,
-        totalPages: Math.ceil(totalCount / limitNum),
+        totalPages: Math.max(1, Math.ceil(totalCount / limitNum)),
       },
     });
   } catch (error) {
