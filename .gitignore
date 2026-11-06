@@ -19,6 +19,9 @@ build/
 logs/
 *.log
 
+# Quote drawings and IFC models
+data/quote-files/
+
 # Runtime data
 pids/
 *.pid

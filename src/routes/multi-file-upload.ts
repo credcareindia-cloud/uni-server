@@ -12,6 +12,18 @@ import { notificationService } from '../services/notificationService.js';
 
 const router = Router();
 
+/**
+ * Panel mark carried by the IFC itself, for models uploaded directly instead of
+ * published from Revit (which supplies a BIMSF_Container sidecar map). Prefers the
+ * Label/Mark property set, else a Name that is already a bare mark (PCW-1501, LB1001).
+ */
+function bimsfFromIfcElement(element: { name?: string; label?: string }): string | null {
+  const label = (element.label || '').trim();
+  if (label) return label;
+  const name = (element.name || '').trim();
+  return /^[A-Za-z]{1,4}[-_]?\d{1,8}(?:-\d+)?$/.test(name) ? name : null;
+}
+
 // Apply authentication middleware to all routes
 router.use(authenticateToken);
 
@@ -53,10 +65,13 @@ interface MultiFileProcessingJob {
     isIfc?: boolean;
   }[];
   projectData?: any;
+  /** Set when the model is being attached to a project that already exists. */
+  existingProjectId?: number;
   projectBase: {
     name: string;
     description: string;
     status: string;
+    buildSystem: string;
     createdBy: string;
     organizationId: string;
   };
@@ -167,7 +182,25 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
     projectName: z.string().min(1).max(255),
     projectDescription: z.string().max(1000).optional(),
     projectStatus: z.enum(['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional().default('ACTIVE'),
+    buildSystem: z.enum(['LGS', 'PRECAST', 'HYBRID']).optional().default('LGS'),
+    /** Attach to this project instead of creating one — how a tender gets its model. */
+    projectId: z.coerce.number().int().positive().optional(),
   }).parse(req.body);
+
+  // A caller can only attach to a project their organization owns, and only to one
+  // that has no model yet; replacing a model is what the Revit republish path is for.
+  let existingProjectId: number | undefined;
+  if (projectData.projectId !== undefined) {
+    const target = await prisma.project.findFirst({
+      where: { id: projectData.projectId, organizationId: req.user.organizationId },
+      select: { id: true, currentModelId: true },
+    });
+    if (!target) throw createApiError('Project not found', 404);
+    if (target.currentModelId) {
+      throw createApiError('This project already has a model. Publish a new version from Revit instead.', 409);
+    }
+    existingProjectId = target.id;
+  }
 
   logger.info(`🏗️ Starting multi-file project creation: ${projectData.projectName} with ${validatedFiles.length} files (${totalSizeMB.toFixed(1)}MB total)`);
 
@@ -191,10 +224,12 @@ router.post('/multi-file-upload', asyncHandler(async (req: AuthenticatedRequest,
         progress: 0
       })),
       createdAt: new Date(),
+      existingProjectId,
       projectBase: {
         name: projectData.projectName,
         description: projectData.projectDescription || `Project with ${validatedFiles.length} files`,
         status: projectData.projectStatus,
+        buildSystem: projectData.buildSystem,
         createdBy: req.user.id,
         organizationId: req.user!.organizationId,
       }
@@ -420,40 +455,51 @@ export function updateMultiFileStatus(
         };
 
         // Create project with transaction to handle displayNumber
-        const project = await prisma.$transaction(async (tx) => {
-          // Get the max displayNumber for this organization
-          const maxProjectInOrg = await tx.project.findFirst({
-            where: { organizationId: job.projectBase.organizationId },
-            orderBy: { displayNumber: 'desc' },
-            select: { displayNumber: true }
-          });
-          const nextDisplayNumber = (maxProjectInOrg?.displayNumber || 0) + 1;
+        const project = job.existingProjectId
+          ? // Attaching to a project that already exists. A tender becomes a real
+            // project the moment it has a model, so promote it here.
+            await prisma.project.update({
+              where: { id: job.existingProjectId },
+              data: { stage: 'PROJECT', status: 'ACTIVE' },
+            })
+          : await prisma.$transaction(async (tx) => {
+              // Get the max displayNumber for this organization
+              const maxProjectInOrg = await tx.project.findFirst({
+                where: { organizationId: job.projectBase.organizationId },
+                orderBy: { displayNumber: 'desc' },
+                select: { displayNumber: true }
+              });
+              const nextDisplayNumber = (maxProjectInOrg?.displayNumber || 0) + 1;
 
-          return tx.project.create({
+              return tx.project.create({
+                data: {
+                  name: job.projectBase.name,
+                  description: job.projectBase.description,
+                  status: job.projectBase.status as any,
+                  buildSystem: job.projectBase.buildSystem as any,
+                  organizationId: job.projectBase.organizationId,
+                  displayNumber: nextDisplayNumber,
+                  metadata: {
+                    createdFromMultiFile: true,
+                    totalFiles: job.totalFiles,
+                    categories: job.files.map(f => f.category)
+                  },
+                  createdBy: job.projectBase.createdBy
+                }
+              });
+            });
+
+        // Add creator as project member (OWNER). An existing project already has
+        // its membership, so skip rather than collide with the unique constraint.
+        if (!job.existingProjectId) {
+          await prisma.projectMember.create({
             data: {
-              name: job.projectBase.name,
-              description: job.projectBase.description,
-              status: job.projectBase.status as any,
-              organizationId: job.projectBase.organizationId,
-              displayNumber: nextDisplayNumber,
-              metadata: {
-                createdFromMultiFile: true,
-                totalFiles: job.totalFiles,
-                categories: job.files.map(f => f.category)
-              },
-              createdBy: job.projectBase.createdBy
+              projectId: project.id,
+              userId: job.projectBase.createdBy,
+              role: 'OWNER'
             }
           });
-        });
-
-        // Add creator as project member (OWNER)
-        await prisma.projectMember.create({
-          data: {
-            projectId: project.id,
-            userId: job.projectBase.createdBy,
-            role: 'OWNER'
-          }
-        });
+        }
 
         const createdModelIds: string[] = [];
         // For each file, create model and upload FRAG to storage
@@ -521,6 +567,7 @@ export function updateMultiFileStatus(
                       Material: element.material,
                       Storey: storey.name,
                       IfcGlobalId: element.globalId || null,
+                      BIMSF_Container: bimsfFromIfcElement(element),
                     }
                   });
                 }

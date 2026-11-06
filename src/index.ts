@@ -12,6 +12,7 @@ import path from 'path';
 import { mkdirSync } from 'fs';
 
 import { authRoutes } from './routes/auth.js';
+import { studioRouter } from './routes/studio.js';
 import projectRoutes from './routes/projects-simple.js';
 import { modelRoutes } from './routes/models.js';
 import { notificationRoutes } from './routes/notifications.js';
@@ -28,6 +29,8 @@ import adminRoutes from './routes/admin.js';
 import userRoutes from './routes/user.js';
 import qrCodeRoutes from './routes/qr_routes.js';
 import documentRoutes from './routes/documents.js';
+import estimateRoutes from './routes/estimates.js';
+import quoteRoutes from './routes/quotes.js';
 import { revitPublishRouter } from './routes/revit-publish.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
@@ -101,6 +104,8 @@ app.use(limiter);
 
 // Body parsing middleware
 app.use(compression());
+// The estimate studio reads raw JSON and drawing bytes. Parse those before the global JSON parser.
+app.use('/api/studio', studioRouter);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -152,6 +157,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/qr-codes', qrCodeRoutes); // QR code API endpoints
 app.use('/api/documents', documentRoutes);
+app.use('/api/estimates', estimateRoutes);
+app.use('/api/quotes', quoteRoutes);
 app.use('/qr', qrCodeRoutes); // Public QR redirect endpoint
 app.use('/api', modelFirstProjectRouter);
 app.use('/api', uploadProcessRouter);

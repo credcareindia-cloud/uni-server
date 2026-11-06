@@ -23,6 +23,9 @@ model Organization {
   users         User[]
   projects      Project[]
   notifications Notification[]
+  estimates     Estimate[]
+  rateCards     RateCard[]
+  quoteRequests QuoteRequest[]
 
   @@map("organizations")
 }
@@ -33,6 +36,7 @@ model User {
   passwordHash   String   @map("password_hash")
   name           String
   role           UserRole @default(ADMIN)
+  permissions    String[] @default([])
   organizationId String   @map("organization_id")
   createdBy      String?  @map("created_by")
   avatar         String?
@@ -57,6 +61,9 @@ model User {
   projectMemberships     ProjectMember[]
   panelViews             UserPanelView[]
   uploadedDocuments      ProjectDocument[] @relation("UserUploadedDocuments")
+  estimates              Estimate[]
+  rateCards              RateCard[]
+  quoteRequests          QuoteRequest[] @relation("QuoteCreatedBy")
 
   @@map("users")
 }
@@ -80,6 +87,8 @@ model Project {
   name           String
   description    String?
   status         ProjectStatus @default(PLANNING)
+  stage          ProjectStage  @default(PROJECT)
+  buildSystem    BuildSystem   @default(LGS) @map("build_system")
   createdBy      String        @map("created_by")
   organizationId String        @map("organization_id")
   createdAt      DateTime      @default(now()) @map("created_at")
@@ -103,6 +112,8 @@ model Project {
   documents     ProjectDocument[] // Project-level documents (PDFs, drawings, etc.)
   browserRevisions ProjectBrowserRevision[]
   drawings         ProjectDrawing[]
+  estimates        Estimate[]
+  quoteRequests    QuoteRequest[]
 
   @@unique([organizationId, displayNumber])
   @@index([organizationId])
@@ -299,6 +310,9 @@ model Panel {
   name        String      // Panel name/identifier
   tag         String?     // Panel tag/code
   objectType  String?     @map("object_type") // Type of panel (Concrete, Steel, etc.)
+
+  // Fabrication route: decides CNC rollforming vs casting, and whether members collapse
+  componentType ComponentType? @map("component_type")
   
   // Panel properties
   dimensions  String?     // Panel dimensions
@@ -524,6 +538,10 @@ model ProjectDeletion {
 enum UserRole {
   VIEWER
   MANAGER
+  DESIGNER
+  ESTIMATOR
+  LOGISTICS
+  PRODUCTION
   ADMIN
 }
 
@@ -541,8 +559,82 @@ enum ProjectStatus {
   CANCELLED
 }
 
+/// How far a job has progressed commercially, which decides what the project can hold.
+///
+/// A TENDER is being priced and has no model yet, so the delivery side of the project —
+/// panels, sequencing, CNC — is not reachable. Winning the work promotes it to PROJECT,
+/// which unlocks model upload. Promotion is one-way.
+enum ProjectStage {
+  TENDER
+  PROJECT
+}
+
+enum QuoteSource {
+  WEB
+  MANUAL
+}
+
+enum QuoteStatus {
+  NEW
+  IN_REVIEW
+  STARTED
+}
+
+/// A public or staff quote: drawings, a note, and an optional IFC, before it becomes a tender.
+model QuoteRequest {
+  id             String      @id @default(cuid())
+  organizationId String      @map("organization_id")
+  name           String
+  email          String
+  projectName    String      @map("project_name")
+  note           String      @default("")
+  drawingKey     String?     @map("drawing_key")
+  drawingName    String?     @map("drawing_name")
+  modelKey       String?     @map("model_key")
+  modelName      String?     @map("model_name")
+  source         QuoteSource @default(WEB)
+  status         QuoteStatus @default(NEW)
+  projectId      Int?        @map("project_id")
+  estimateId     String?     @map("estimate_id")
+  createdById    String?     @map("created_by")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("QuoteCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@map("quote_requests")
+}
+
 enum ModelType {
   FRAG 
+}
+
+/// Primary structural system. HYBRID covers precast shells with LGS infill walls and pods.
+enum BuildSystem {
+  LGS
+  PRECAST
+  HYBRID
+}
+
+/// Per-panel fabrication route. LGS_* are rollformed and assembled from members;
+/// PRECAST_* and POD are cast or factory-built as single units.
+enum ComponentType {
+  LGS_WALL_LB
+  LGS_WALL_NLB
+  LGS_FLOOR_TRUSS
+  LGS_ROOF_TRUSS
+  PRECAST_WALL
+  PRECAST_FOOTING
+  HOLLOWCORE_SLAB
+  TIE_BEAM
+  LEVELING_PAD
+  POD
+  CONNECTOR
+  OTHER
 }
 
 enum ModelCategory {
@@ -599,4 +691,199 @@ enum DocumentCategory {
   DRAWINGS
   LOGISTICS
   CNC
+}
+
+enum EstimateStatus {
+  DRAFT
+  ISSUED
+  WON
+  LOST
+  SUPERSEDED
+}
+
+/// How a line earns its sell rate. PASS_THROUGH covers preliminaries and logistics,
+/// which carry no overhead, margin, financing or contingency.
+enum PricingMode {
+  FULL
+  PASS_THROUGH
+}
+
+/// Where a takeoff quantity came from, so automation accuracy can be measured later.
+enum TakeoffSource {
+  MANUAL
+  DRAWING
+  BIM_MODEL
+}
+
+/// A priced revision of a job. Exists before a Project does: a tender is estimated,
+/// and only once it is won does `projectId` get set, linking the baseline budget to
+/// the delivery data without copying or migrating anything.
+model Estimate {
+  id             String         @id @default(cuid())
+  organizationId String         @map("organization_id")
+  projectId      Int?           @map("project_id")
+
+  /// The company job number, e.g. 5345. Shared by every revision of the same job.
+  jobNumber      String         @map("job_number")
+  /// Revision label as the estimators write it, e.g. "R0", "R2 -PRE WAR".
+  revision       String
+  name           String
+  client         String?
+  location       String?
+  consultant     String?
+  status         EstimateStatus @default(DRAFT)
+
+  currency       String         @default("AED")
+  /// Units of `currency` per USD, for the USD/sqft figure on the summary.
+  fxRate         Float          @default(3.67) @map("fx_rate")
+  totalArea      Float?         @map("total_area")
+
+  // Commercial uplifts, stored per revision so an old quote stays reproducible
+  // even after procurement republishes rates or management changes the margin.
+  overheadPct     Float @default(0.15) @map("overhead_pct")
+  marginPct       Float @default(0.15) @map("margin_pct")
+  financingPct    Float @default(0.02) @map("financing_pct")
+  contingencyPct  Float @default(0.05) @map("contingency_pct")
+  customsPct      Float @default(0)    @map("customs_pct")
+  corporateTaxPct Float @default(0)    @map("corporate_tax_pct")
+  designPct       Float @default(0.02) @map("design_pct")
+  commissionPct   Float @default(0.07) @map("commission_pct")
+
+  /// Grand total at last save. Derived, kept so lists need not price every line.
+  totalAmount    Float?   @map("total_amount")
+
+  sourceFile     String?  @map("source_file")
+  notes          String?
+  createdBy      String   @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  owner        User           @relation(fields: [createdBy], references: [id])
+  lines        EstimateLine[]
+  takeoff      TakeoffItem[]
+
+  @@unique([organizationId, jobNumber, revision])
+  @@index([organizationId])
+  @@index([projectId])
+  @@map("estimates")
+}
+
+/// One priced line. Direct costs are snapshotted onto the row rather than referenced
+/// from a live rate card, so republishing rates never alters an issued quote.
+model EstimateLine {
+  id         String  @id @default(cuid())
+  estimateId String  @map("estimate_id")
+
+  /// Position in the estimator's numbering, e.g. "3.4.10".
+  slNo        String?
+  /// Bill this line rolls into on the client summary, e.g. "Roofing".
+  bill        String
+  description String
+  unit        String?
+  sortOrder   Int     @default(0) @map("sort_order")
+
+  qty         Float       @default(0)
+  mode        PricingMode @default(FULL)
+
+  // Direct cost components, per unit, in the estimate's currency.
+  materialCost     Float @default(0) @map("material_cost")
+  fabricationCost  Float @default(0) @map("fabrication_cost")
+  installationCost Float @default(0) @map("installation_cost")
+  prelimsCost      Float @default(0) @map("prelims_cost")
+  shippingCost     Float @default(0) @map("shipping_cost")
+  packagingCost    Float @default(0) @map("packaging_cost")
+  loadingCost      Float @default(0) @map("loading_cost")
+
+  /// Derived sell rate and amount at last save, for fast reads.
+  sellRate    Float? @map("sell_rate")
+  totalAmount Float? @map("total_amount")
+
+  /// Set when the quantity came from a takeoff row rather than being typed in.
+  takeoffItemId String? @map("takeoff_item_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  estimate Estimate     @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  takeoff  TakeoffItem? @relation(fields: [takeoffItemId], references: [id], onDelete: SetNull)
+
+  @@index([estimateId])
+  @@map("estimate_lines")
+}
+
+/// A measured quantity from the drawings or the model, feeding one or more lines.
+model TakeoffItem {
+  id         String @id @default(cuid())
+  estimateId String @map("estimate_id")
+
+  storey      String?
+  description String
+  width       Float?
+  height      Float?
+  area        Float?
+  totalArea   Float?        @map("total_area")
+  totalSqft   Float?        @map("total_sqft")
+  source      TakeoffSource @default(MANUAL)
+  /// Element ids, drawing region or sheet the measurement came from.
+  sourceRef   String?       @map("source_ref")
+  sortOrder   Int           @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  estimate Estimate       @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  lines    EstimateLine[]
+
+  @@index([estimateId])
+  @@map("takeoff_items")
+}
+
+/// A published set of rates. Owned by procurement; estimators consume but never edit.
+/// Superseding a card leaves issued estimates untouched because they hold snapshots.
+model RateCard {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  version        Int      @default(1)
+  currency       String   @default("AED")
+  effectiveFrom  DateTime @default(now()) @map("effective_from")
+  isActive       Boolean  @default(true) @map("is_active")
+  notes          String?
+  createdBy      String   @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner        User         @relation(fields: [createdBy], references: [id])
+  items        RateItem[]
+
+  @@unique([organizationId, name, version])
+  @@index([organizationId])
+  @@map("rate_cards")
+}
+
+model RateItem {
+  id         String @id @default(cuid())
+  rateCardId String @map("rate_card_id")
+
+  description   String
+  unit          String?
+  /// Supply rate per unit.
+  unitRate      Float?  @map("unit_rate")
+  /// Same rate converted to a per-sqft basis, as the estimators' data sheet keeps it.
+  sqftRate      Float?  @map("sqft_rate")
+  labourPerSqft Float?  @map("labour_per_sqft")
+  supplier      String?
+  notes         String?
+  sortOrder     Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  rateCard RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+
+  @@index([rateCardId])
+  @@map("rate_items")
 }

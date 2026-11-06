@@ -503,7 +503,9 @@ router.get('/:id/download', authenticateToken, asyncHandler(async (req: Authenti
     res.setHeader('Cache-Control', 'private, max-age=60');
     res.send(fileBuffer);
   } catch (error) {
-    logger.error(`Failed to stream model ${id}:`, error);
+    logger.error(
+      `Failed to stream model ${id}: ${(error as any)?.name || 'Error'} ${(error as any)?.message || error}`
+    );
     throw createApiError('Failed to download model', 500);
   }
 }));

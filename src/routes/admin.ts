@@ -2,6 +2,7 @@ import express, { Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
+import { canonicalRole, isWorkspaceRole, resolvePermissions } from '../auth/permissions.js';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -39,6 +40,7 @@ router.get('/users', async (req: AuthenticatedRequest, res: Response) => {
         name: true,
         email: true,
         role: true,
+        permissions: true,
         lastLogin: true,
         createdAt: true,
         _count: {
@@ -57,7 +59,8 @@ router.get('/users', async (req: AuthenticatedRequest, res: Response) => {
       id: user.id,
       name: user.name,
       email: user.email,
-      role: user.role,
+      role: canonicalRole(user.role),
+      permissions: resolvePermissions(user.role, user.permissions),
       status: 'active',
       projects: user._count.projectMemberships,
       lastLogin: user.lastLogin ? new Date(user.lastLogin).toLocaleDateString() : 'Never',
@@ -71,10 +74,9 @@ router.get('/users', async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
-// Create new user (only MANAGER or VIEWER roles allowed)
 router.post('/users', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, permissions } = req.body;
 
     // Validate input
     if (!name || !email || !password) {
@@ -85,10 +87,9 @@ router.post('/users', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters long' });
     }
 
-    // Only allow MANAGER or VIEWER roles
-    const userRole = role ? role.toUpperCase() : 'VIEWER';
-    if (!['MANAGER', 'VIEWER'].includes(userRole)) {
-      return res.status(400).json({ error: 'Only MANAGER or VIEWER roles can be created' });
+    const userRole = canonicalRole(role || 'VIEWER');
+    if (!role || !isWorkspaceRole(String(role))) {
+      return res.status(400).json({ error: 'Choose a role' });
     }
 
     // Check if user already exists
@@ -109,7 +110,8 @@ router.post('/users', async (req: AuthenticatedRequest, res: Response) => {
         name,
         email,
         passwordHash: hashedPassword,
-        role: userRole as 'MANAGER' | 'VIEWER',
+        role: userRole as any,
+        permissions: resolvePermissions(userRole, permissions),
         organizationId: req.user!.organizationId,
         createdBy: req.user!.id
       },
@@ -118,6 +120,7 @@ router.post('/users', async (req: AuthenticatedRequest, res: Response) => {
         name: true,
         email: true,
         role: true,
+        permissions: true,
         createdAt: true
       }
     });
@@ -126,7 +129,8 @@ router.post('/users', async (req: AuthenticatedRequest, res: Response) => {
       id: newUser.id,
       name: newUser.name,
       email: newUser.email,
-      role: newUser.role,
+      role: canonicalRole(newUser.role),
+      permissions: resolvePermissions(newUser.role, newUser.permissions),
       status: 'active',
       projects: 0,
       lastLogin: 'Never',
@@ -183,7 +187,7 @@ router.delete('/users/:userId', async (req: AuthenticatedRequest, res: Response)
 router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { userId } = req.params;
-    const { name, email, role } = req.body;
+    const { name, email, role, permissions } = req.body;
 
     // Get user to verify ownership
     const user = await prisma.user.findUnique({
@@ -200,10 +204,8 @@ router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) 
     }
 
     // Prevent changing your own role
-    if (userId === req.user!.id && role) {
-      if (user.role !== role.toUpperCase()) {
-        return res.status(400).json({ error: 'Cannot change your own role' });
-      }
+    if (userId === req.user!.id && role && canonicalRole(user.role) !== canonicalRole(role)) {
+      return res.status(400).json({ error: 'Cannot change your own role' });
     }
 
     // Check if email is already taken by another user
@@ -218,13 +220,15 @@ router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) 
     if (name) updateData.name = name;
     if (email) updateData.email = email;
     
-    // Prevent promoting to ADMIN role
     if (role) {
-      const newRole = role.toUpperCase();
-      if (newRole === 'ADMIN') {
-        return res.status(400).json({ error: 'Cannot promote users to ADMIN role' });
+      if (!isWorkspaceRole(String(role))) {
+        return res.status(400).json({ error: 'Choose a role' });
       }
-      updateData.role = newRole as 'MANAGER' | 'VIEWER';
+      updateData.role = canonicalRole(role) as any;
+    }
+    if (permissions !== undefined || role) {
+      const nextRole = updateData.role || user.role;
+      updateData.permissions = resolvePermissions(nextRole, permissions !== undefined ? permissions : user.permissions);
     }
 
     const updatedUser = await prisma.user.update({
@@ -235,6 +239,7 @@ router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) 
         name: true,
         email: true,
         role: true,
+        permissions: true,
         lastLogin: true,
         createdAt: true,
         _count: {
@@ -249,7 +254,8 @@ router.patch('/users/:userId', async (req: AuthenticatedRequest, res: Response) 
       id: updatedUser.id,
       name: updatedUser.name,
       email: updatedUser.email,
-      role: updatedUser.role,
+      role: canonicalRole(updatedUser.role),
+      permissions: resolvePermissions(updatedUser.role, updatedUser.permissions),
       status: 'active',
       projects: updatedUser._count.projectMemberships,
       lastLogin: updatedUser.lastLogin ? new Date(updatedUser.lastLogin).toLocaleDateString() : 'Never',
@@ -290,16 +296,17 @@ router.patch('/users/:userId/role', async (req: AuthenticatedRequest, res: Respo
       return res.status(403).json({ error: 'Cannot update users from other organizations' });
     }
 
-    const userRole = role.toUpperCase();
-
-    // Prevent promoting to ADMIN role
-    if (userRole === 'ADMIN') {
-      return res.status(400).json({ error: 'Cannot promote users to ADMIN role' });
+    if (!isWorkspaceRole(String(role))) {
+      return res.status(400).json({ error: 'Choose a role' });
     }
+    const userRole = canonicalRole(role);
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: { role: userRole as 'MANAGER' | 'VIEWER' },
+      data: {
+        role: userRole as any,
+        permissions: resolvePermissions(userRole, undefined),
+      },
       select: {
         id: true,
         name: true,

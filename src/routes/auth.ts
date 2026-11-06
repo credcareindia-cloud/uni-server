@@ -6,6 +6,7 @@ import { prisma } from '../config/database.js';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
 import { logger } from '../utils/logger.js';
+import { canonicalRole, resolvePermissions } from '../auth/permissions.js';
 
 const router = Router();
 
@@ -176,7 +177,8 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
       id: user.id,
       email: user.email,
       name: user.name,
-      role: user.role,
+      role: canonicalRole(user.role),
+      permissions: resolvePermissions(user.role, user.permissions),
       createdAt: user.createdAt
     },
     token
@@ -199,6 +201,7 @@ router.get('/me', authenticateToken, asyncHandler(async (req: AuthenticatedReque
       email: true,
       name: true,
       role: true,
+      permissions: true,
       avatar: true,
       organizationId: true,
       createdAt: true,
@@ -210,7 +213,13 @@ router.get('/me', authenticateToken, asyncHandler(async (req: AuthenticatedReque
     throw createApiError('User not found', 404);
   }
 
-  res.json({ user });
+  res.json({
+    user: {
+      ...user,
+      role: canonicalRole(user.role),
+      permissions: resolvePermissions(user.role, user.permissions),
+    }
+  });
 }));
 
 /**

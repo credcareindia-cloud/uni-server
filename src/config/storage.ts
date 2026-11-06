@@ -21,15 +21,21 @@ export class StorageService {
     // Only use explicit credentials if provided (for local dev with MinIO)
     // In production ECS, omit credentials to use IAM task role
     const s3Config: any = {
-      endpoint: config.endpoint,
       region: config.region,
       forcePathStyle: config.forcePathStyle,
     };
+    if (config.endpoint) {
+      s3Config.endpoint = config.endpoint;
+    }
     
-    if (config.accessKeyId && config.secretAccessKey) {
+    const accessKeyId = config.accessKeyId || process.env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = config.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY;
+    const sessionToken = process.env.AWS_SESSION_TOKEN;
+    if (accessKeyId && secretAccessKey) {
       s3Config.credentials = {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
+        accessKeyId,
+        secretAccessKey,
+        ...(sessionToken ? { sessionToken } : {}),
       };
     }
     
@@ -160,8 +166,10 @@ export class StorageService {
       const buffer = Buffer.concat(chunks);
       logger.info(`✅ File downloaded successfully: ${key} (${buffer.length} bytes)`);
       return buffer;
-    } catch (error) {
-      logger.error('Error downloading file:', error);
+    } catch (error: any) {
+      logger.error(
+        `Error downloading file ${key}: ${error?.name || 'Error'} ${error?.$metadata?.httpStatusCode || ''} ${error?.message || error}`
+      );
       throw new Error('Failed to download file');
     }
   }

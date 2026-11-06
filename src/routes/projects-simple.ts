@@ -16,12 +16,16 @@ const createProjectSchema = z.object({
   name: z.string().min(1, 'Project name is required').max(255, 'Project name too long'),
   description: z.string().optional(),
   status: z.enum(['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  buildSystem: z.enum(['LGS', 'PRECAST', 'HYBRID']).optional(),
+  client: z.string().max(255).optional(),
 });
 
 const updateProjectSchema = z.object({
   name: z.string().min(1, 'Project name is required').max(255, 'Project name too long').optional(),
   description: z.string().optional(),
   status: z.enum(['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  stage: z.enum(['TENDER', 'PROJECT']).optional(),
+  buildSystem: z.enum(['LGS', 'PRECAST', 'HYBRID']).optional(),
   metadata: z.record(z.any()).optional(),
 });
 
@@ -134,6 +138,8 @@ router.get('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =>
     name: project.name,
     description: project.description,
     status: project.status,
+    stage: project.stage,
+    buildSystem: project.buildSystem,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     currentModel: project.currentModel ? {
@@ -244,6 +250,8 @@ router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: Authen
     name: project.name,
     description: project.description,
     status: project.status,
+    stage: project.stage,
+    buildSystem: project.buildSystem,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     metadata: project.metadata ?? null,
@@ -270,15 +278,64 @@ router.get('/:id', requireProjectRole('VIEWER'), asyncHandler(async (req: Authen
 
 /**
  * POST /api/projects
- * DISABLED: Projects can only be created with models via /api/create-project-with-model
- * This enforces the model-first approach where every project must have a model
+ * Create a tender-stage project.
+ *
+ * This is the one path that makes a project without a model, because a tender is
+ * priced long before there is anything to model. The project is pinned to TENDER so
+ * the delivery side stays unreachable; `PUT /:id` promotes it once the job is won,
+ * and model upload still goes through the model-first flow from there.
  */
-router.post('/', asyncHandler(async (req: any, res: Response) => {
-  res.status(400).json({
-    error: 'Standalone project creation is not allowed',
-    message: 'Projects can only be created with a model. Please use the model upload feature to create a project.',
-    redirectTo: '/api/create-project-with-model',
-    timestamp: new Date().toISOString()
+router.post('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw createApiError('User not authenticated', 401);
+  }
+
+  const data = createProjectSchema.parse(req.body);
+
+  const project = await prisma.$transaction(async (tx) => {
+    const highest = await tx.project.findFirst({
+      where: { organizationId: req.user!.organizationId },
+      orderBy: { displayNumber: 'desc' },
+      select: { displayNumber: true },
+    });
+
+    const created = await tx.project.create({
+      data: {
+        name: data.name,
+        description: data.description,
+        status: data.status ?? 'PLANNING',
+        stage: 'TENDER',
+        buildSystem: data.buildSystem ?? 'LGS',
+        organizationId: req.user!.organizationId,
+        displayNumber: (highest?.displayNumber || 0) + 1,
+        createdBy: req.user!.id,
+        metadata: { createdAsTender: true, ...(data.client ? { client: data.client } : {}) },
+      },
+    });
+
+    // Non-admins only see projects they are a member of, so the creator needs a row
+    // or they would lose the tender they just raised.
+    await tx.projectMember.create({
+      data: { projectId: created.id, userId: req.user!.id, role: 'OWNER' },
+    });
+
+    return created;
+  });
+
+  logger.info(`Tender project created: ${project.name} by ${req.user.email}`);
+
+  res.status(201).json({
+    id: project.id,
+    displayNumber: project.displayNumber,
+    name: project.name,
+    description: project.description,
+    status: project.status,
+    stage: project.stage,
+    buildSystem: project.buildSystem,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    metadata: project.metadata ?? null,
+    stats: { totalModels: 0, totalGroups: 0, totalPanels: 0 },
   });
 }));
 
@@ -301,10 +358,16 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
 
   const existing = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { metadata: true },
+    select: { metadata: true, stage: true },
   });
   if (!existing) {
     throw createApiError('Project not found', 404);
+  }
+
+  // Promotion is one-way: a project that already has a model, panels and sequencing
+  // cannot sensibly go back to being an unpriced tender.
+  if (updateData.stage === 'TENDER' && existing.stage === 'PROJECT') {
+    throw createApiError('A project cannot be moved back to tender stage', 400);
   }
 
   const existingMeta =
@@ -322,6 +385,8 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
       ...(updateData.name && { name: updateData.name }),
       ...(updateData.description !== undefined && { description: updateData.description }),
       ...(updateData.status && { status: updateData.status }),
+      ...(updateData.stage && { stage: updateData.stage }),
+      ...(updateData.buildSystem && { buildSystem: updateData.buildSystem }),
       ...(incomingMeta
         ? {
             metadata: {
@@ -365,6 +430,8 @@ router.put('/:id', requireProjectRole('MANAGER'), asyncHandler(async (req: Authe
     name: project.name,
     description: project.description,
     status: project.status,
+    stage: project.stage,
+    buildSystem: project.buildSystem,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     metadata: project.metadata ?? null,
