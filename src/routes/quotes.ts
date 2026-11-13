@@ -95,10 +95,11 @@ router.post('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =
   const fields = readFields(req.body || {});
   const drawing = one(req.files?.drawing as Uploaded | Uploaded[] | undefined);
   const model = one(req.files?.model as Uploaded | Uploaded[] | undefined);
-  if (!drawing) throw createApiError('Upload a drawing', 400);
-  if (!DRAWING_EXT.has(extOf(drawing.name))) throw createApiError('Drawing must be a PDF, image, DWG, or DXF', 400);
+  // The drawing is optional: the marketing site sends template quotes, contact messages and
+  // newsletter sign-ups here too, and those describe the request in the note instead.
+  if (drawing && !DRAWING_EXT.has(extOf(drawing.name))) throw createApiError('Drawing must be a PDF, image, DWG, or DXF', 400);
   if (model && !MODEL_EXT.has(extOf(model.name))) throw createApiError('The 3D model must be an IFC file', 400);
-  if (!fields.note) throw createApiError('Add a note with the drawing', 400);
+  if (!fields.note) throw createApiError('Add a note describing the request', 400);
 
   const organizations = await prisma.organization.findMany({
     include: { _count: { select: { users: true } } },
@@ -119,13 +120,13 @@ router.post('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =
     },
   });
 
-  const drawingSaved = await saveFile(created.id, 'drawing', drawing);
+  const drawingSaved = drawing ? await saveFile(created.id, 'drawing', drawing) : null;
   const modelSaved = model ? await saveFile(created.id, 'model', model) : null;
   const quote = await prisma.quoteRequest.update({
     where: { id: created.id },
     data: {
-      drawingKey: drawingSaved.key,
-      drawingName: drawingSaved.name,
+      drawingKey: drawingSaved?.key,
+      drawingName: drawingSaved?.name,
       modelKey: modelSaved?.key,
       modelName: modelSaved?.name,
     },
