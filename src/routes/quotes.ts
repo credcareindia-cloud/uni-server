@@ -265,7 +265,8 @@ async function deleteStartedWork(organizationId: string, projectId: number | nul
   }).catch(() => undefined);
   await prisma.qRCode.deleteMany({ where: { projectId } }).catch(() => undefined);
   await prisma.project.delete({ where: { id: projectId } });
-  await prisma.$executeRaw`DELETE FROM estimation.projects WHERE id = ${`p${projectId}`}`;
+  // Estimation studio tables are created lazily; ignore if the schema is not there yet.
+  await prisma.$executeRaw`DELETE FROM estimation.projects WHERE id = ${`p${projectId}`}`.catch(() => undefined);
 }
 
 router.delete('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

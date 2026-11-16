@@ -11,10 +11,37 @@ function qualify(text: string) {
   return text.replace(TABLES, 'estimation.$1')
 }
 
+/** RDS rejects cleartext (`no encryption` in pg_hba). Local Docker Postgres does not need SSL. */
+function poolSsl(connectionString: string): boolean | pg.ConnectionOptions {
+  const mode = (process.env.DATABASE_SSL || '').toLowerCase()
+  if (mode === '0' || mode === 'false' || mode === 'disable') return false
+  if (/sslmode=disable/i.test(connectionString)) return false
+
+  const remote = !/(localhost|127\.0\.0\.1)/i.test(connectionString)
+  const required =
+    mode === '1' ||
+    mode === 'true' ||
+    mode === 'require' ||
+    /sslmode=(require|verify-ca|verify-full)/i.test(connectionString) ||
+    remote
+
+  if (!required) return false
+
+  // Amazon RDS presents a CA most Node installs do not trust by default.
+  const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true'
+  return { rejectUnauthorized }
+}
+
 export function getPool() {
   const url = process.env.DATABASE_URL
   if (!url) throw new Error('DATABASE_URL is not set')
-  if (!pool) pool = new Pool({ connectionString: url, max: 6 })
+  if (!pool) {
+    pool = new Pool({
+      connectionString: url,
+      max: 6,
+      ssl: poolSsl(url),
+    })
+  }
   return pool
 }
 
