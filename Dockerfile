@@ -26,12 +26,13 @@ RUN npm ci
 ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
 RUN npx prisma generate --generator client
 
-# Copy tsconfig and source
+# Copy tsconfig, build script, and source
 COPY tsconfig*.json ./
+COPY build-docker.mjs ./
 COPY src ./src
 
-# Build TypeScript (quiet, still emits even if TS errors)
-RUN npm run build:quiet
+# Transpile with esbuild (tsc OOMs on this codebase in CI/Docker)
+RUN npm run build:docker && test -f dist/index.js
 
 # Expose API port
 EXPOSE 4000
