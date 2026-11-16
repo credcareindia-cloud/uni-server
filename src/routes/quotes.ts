@@ -1,15 +1,18 @@
 import { Router, Response } from 'express';
-import fs from 'fs/promises';
-import path from 'path';
 import fileUpload from 'express-fileupload';
 import { prisma } from '../config/database.js';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { asyncHandler, createApiError } from '../middleware/errorHandler.js';
 import { resolvePermissions } from '../auth/permissions.js';
 import { logger } from '../utils/logger.js';
+import {
+  attachQuoteFiles,
+  purgeQuoteStorage,
+  promoteQuoteDrawingToProject,
+  streamQuoteAttachment,
+} from '../services/quoteFiles.js';
 
 const router = Router();
-const uploadRoot = path.join(process.cwd(), 'data', 'quote-files');
 
 const DRAWING_EXT = new Set(['pdf', 'png', 'jpg', 'jpeg', 'webp', 'dwg', 'dxf']);
 const MODEL_EXT = new Set(['ifc']);
@@ -23,16 +26,6 @@ function one(file: Uploaded | Uploaded[] | undefined) {
 
 function extOf(name: string) {
   return name.split('.').pop()?.toLowerCase() || '';
-}
-
-async function saveFile(id: string, kind: 'drawing' | 'model', file: Uploaded) {
-  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180);
-  const key = path.join(id, `${kind}-${safe}`);
-  const dest = path.join(uploadRoot, key);
-  await fs.mkdir(path.dirname(dest), { recursive: true });
-  if (file.tempFilePath) await fs.copyFile(file.tempFilePath, dest);
-  else await fs.writeFile(dest, file.data);
-  return { key, name: file.name };
 }
 
 function readFields(body: Record<string, unknown>) {
@@ -120,15 +113,20 @@ router.post('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =
     },
   });
 
-  const drawingSaved = drawing ? await saveFile(created.id, 'drawing', drawing) : null;
-  const modelSaved = model ? await saveFile(created.id, 'model', model) : null;
+  const files = await attachQuoteFiles({
+    organizationId: organization.id,
+    quoteId: created.id,
+    drawing,
+    model,
+  });
+
   const quote = await prisma.quoteRequest.update({
     where: { id: created.id },
     data: {
-      drawingKey: drawingSaved?.key,
-      drawingName: drawingSaved?.name,
-      modelKey: modelSaved?.key,
-      modelName: modelSaved?.name,
+      drawingKey: files.drawingKey,
+      drawingName: files.drawingName,
+      modelKey: files.modelKey,
+      modelName: files.modelName,
     },
   });
 
@@ -170,15 +168,21 @@ router.post('/manual', asyncHandler(async (req: AuthenticatedRequest, res: Respo
       createdById: user.id,
     },
   });
-  const drawingSaved = drawing ? await saveFile(created.id, 'drawing', drawing) : null;
-  const modelSaved = model ? await saveFile(created.id, 'model', model) : null;
+
+  const files = await attachQuoteFiles({
+    organizationId: user.organizationId,
+    quoteId: created.id,
+    drawing,
+    model,
+  });
+
   const quote = await prisma.quoteRequest.update({
     where: { id: created.id },
     data: {
-      drawingKey: drawingSaved?.key,
-      drawingName: drawingSaved?.name,
-      modelKey: modelSaved?.key,
-      modelName: modelSaved?.name,
+      drawingKey: files.drawingKey,
+      drawingName: files.drawingName,
+      modelKey: files.modelKey,
+      modelName: files.modelName,
     },
     include: { project: { select: { id: true, name: true, displayNumber: true } } },
   });
@@ -195,13 +199,10 @@ router.get('/:id/files/:kind', asyncHandler(async (req: AuthenticatedRequest, re
     where: { id: req.params.id, organizationId: user.organizationId },
   });
   if (!quote) throw createApiError('Request not found', 404);
+
   const key = kind === 'drawing' ? quote.drawingKey : quote.modelKey;
   const name = kind === 'drawing' ? quote.drawingName : quote.modelName;
-  if (!key || !name) throw createApiError('That file was not uploaded', 404);
-
-  const filePath = path.join(uploadRoot, key);
-  await fs.access(filePath);
-  res.download(filePath, name);
+  await streamQuoteAttachment(res, key, name);
 }));
 
 async function deleteStartedWork(organizationId: string, projectId: number | null, estimateId: string | null) {
@@ -244,7 +245,9 @@ router.delete('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Respon
 
   await deleteStartedWork(user.organizationId, quote.projectId, quote.estimateId);
   await prisma.quoteRequest.delete({ where: { id: quote.id } });
-  await fs.rm(path.join(uploadRoot, quote.id), { recursive: true, force: true });
+  await purgeQuoteStorage(user.organizationId, quote.id).catch((error) => {
+    logger.warn(`Quote ${quote.id} DB row deleted but S3 purge failed`, error);
+  });
   logger.info(`Quote ${quote.id} deleted by ${user.id}`);
   res.status(204).end();
 }));
@@ -320,6 +323,15 @@ router.post('/:id/start', asyncHandler(async (req: AuthenticatedRequest, res: Re
       data: { status: 'STARTED', projectId: project.id, estimateId: estimate.id },
     });
     return { projectId: project.id, estimateId: estimate.id, displayNumber: project.displayNumber };
+  });
+
+  await promoteQuoteDrawingToProject({
+    organizationId: user.organizationId,
+    quoteId: quote.id,
+    projectId: result.projectId,
+    drawingKey: quote.drawingKey,
+    drawingName: quote.drawingName,
+    uploadedBy: user.id,
   });
 
   logger.info(`Quote ${quote.id} started as project ${result.projectId}`);
