@@ -322,7 +322,7 @@ export class StorageService {
   }
 
   /**
-   * Object key for a quote attachment.
+   * Object key for a quote attachment already tied to a request row.
    * Layout: quotes/{organizationId}/{quoteId}/{kind}/{unique}-{safeName}
    */
   quoteFileKey(
@@ -334,6 +334,17 @@ export class StorageService {
     const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160) || 'file';
     const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     return `quotes/${organizationId}/${quoteId}/${kind}/${unique}-${safe}`;
+  }
+
+  /**
+   * Browser uploads land here first (presigned PUT), then the create-quote call claims the key.
+   * Layout: quotes/{organizationId}/inbox/{uploadId}/{kind}/{unique}-{safeName}
+   */
+  quoteInboxKey(organizationId: string, kind: 'drawing' | 'model', filename: string): string {
+    const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160) || 'file';
+    const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const unique = Math.random().toString(36).slice(2, 10);
+    return `quotes/${organizationId}/inbox/${uploadId}/${kind}/${unique}-${safe}`;
   }
 }
 

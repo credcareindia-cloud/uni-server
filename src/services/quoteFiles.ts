@@ -33,6 +33,66 @@ function isObjectKey(key: string | null | undefined): key is string {
   return Boolean(key && key.startsWith('quotes/'));
 }
 
+function isInboxKey(organizationId: string, kind: 'drawing' | 'model', key: string): boolean {
+  return key.startsWith(`quotes/${organizationId}/inbox/`) && key.includes(`/${kind}/`);
+}
+
+const DRAWING_EXT = new Set(['pdf', 'png', 'jpg', 'jpeg', 'webp', 'dwg', 'dxf']);
+const MODEL_EXT = new Set(['ifc']);
+
+export function assertQuoteFilename(kind: 'drawing' | 'model', filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  if (kind === 'drawing' && !DRAWING_EXT.has(ext)) {
+    throw createApiError('Drawing must be a PDF, image, DWG, or DXF', 400);
+  }
+  if (kind === 'model' && !MODEL_EXT.has(ext)) {
+    throw createApiError('The 3D model must be an IFC file', 400);
+  }
+}
+
+/** Presign a browser PUT into the org inbox. The create-quote call claims the key next. */
+export async function createQuoteUploadUrl(params: {
+  organizationId: string;
+  kind: 'drawing' | 'model';
+  filename: string;
+  contentType?: string;
+  sizeBytes: number;
+}): Promise<{ key: string; uploadUrl: string; expiresIn: number; maxBytes: number; contentType: string }> {
+  const { organizationId, kind, filename, sizeBytes } = params;
+  assertQuoteFilename(kind, filename);
+  const max = kind === 'drawing' ? MAX_QUOTE_DRAWING_BYTES : MAX_QUOTE_MODEL_BYTES;
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) throw createApiError('File size is required', 400);
+  if (sizeBytes > max) {
+    throw createApiError(
+      `${kind === 'drawing' ? 'Drawing' : 'Model'} is larger than ${Math.round(max / (1024 * 1024))} MB`,
+      413
+    );
+  }
+
+  const contentType = quoteContentType(filename, params.contentType);
+  const key = storageService.quoteInboxKey(organizationId, kind, filename);
+  const expiresIn = 10 * 60;
+  const uploadUrl = await storageService.getUploadUrl(key, contentType, expiresIn);
+  return { key, uploadUrl, expiresIn, maxBytes: max, contentType };
+}
+
+/** Verify a previously uploaded inbox object belongs to this org and kind, then keep its key. */
+export async function claimInboxAttachment(params: {
+  organizationId: string;
+  kind: 'drawing' | 'model';
+  key: string;
+  filename: string;
+}): Promise<{ key: string; name: string }> {
+  const { organizationId, kind, key, filename } = params;
+  assertQuoteFilename(kind, filename);
+  if (!isInboxKey(organizationId, kind, key)) throw createApiError('Invalid upload key', 400);
+  const head = await storageService.headObject(key);
+  if (!head) throw createApiError('Upload not found — please attach the file again', 400);
+  const max = kind === 'drawing' ? MAX_QUOTE_DRAWING_BYTES : MAX_QUOTE_MODEL_BYTES;
+  if (head.contentLength > max) throw createApiError('Uploaded file is too large', 413);
+  return { key, name: filename.slice(0, 180) };
+}
+
 async function bufferFromUpload(file: Uploaded): Promise<Buffer> {
   if (file.data && file.data.length > 0) return file.data;
   if (file.tempFilePath) return readFile(file.tempFilePath);
@@ -67,12 +127,16 @@ export async function storeQuoteAttachment(params: {
   return { key, name: file.name, contentType, sizeBytes: file.size };
 }
 
-/** Upload drawing/model; on failure delete the quote row and any objects already written. */
+/** Attach multipart files and/or claim browser-presigned inbox keys. Rolls back the quote on failure. */
 export async function attachQuoteFiles(params: {
   organizationId: string;
   quoteId: string;
   drawing?: Uploaded;
   model?: Uploaded;
+  drawingKey?: string;
+  drawingName?: string;
+  modelKey?: string;
+  modelName?: string;
 }): Promise<{
   drawingKey?: string;
   drawingName?: string;
@@ -83,19 +147,41 @@ export async function attachQuoteFiles(params: {
   const saved: { drawingKey?: string; drawingName?: string; modelKey?: string; modelName?: string } = {};
 
   try {
-    if (drawing) {
+    if (params.drawingKey) {
+      const claimed = await claimInboxAttachment({
+        organizationId,
+        kind: 'drawing',
+        key: params.drawingKey,
+        filename: params.drawingName || params.drawingKey.split('/').pop() || 'drawing',
+      });
+      saved.drawingKey = claimed.key;
+      saved.drawingName = claimed.name;
+    } else if (drawing) {
       const result = await storeQuoteAttachment({ organizationId, quoteId, kind: 'drawing', file: drawing });
       saved.drawingKey = result.key;
       saved.drawingName = result.name;
     }
-    if (model) {
+
+    if (params.modelKey) {
+      const claimed = await claimInboxAttachment({
+        organizationId,
+        kind: 'model',
+        key: params.modelKey,
+        filename: params.modelName || params.modelKey.split('/').pop() || 'model.ifc',
+      });
+      saved.modelKey = claimed.key;
+      saved.modelName = claimed.name;
+    } else if (model) {
       const result = await storeQuoteAttachment({ organizationId, quoteId, kind: 'model', file: model });
       saved.modelKey = result.key;
       saved.modelName = result.name;
     }
     return saved;
   } catch (error) {
-    await purgeQuoteStorage(organizationId, quoteId).catch((purgeError) => {
+    await purgeQuoteStorage(organizationId, quoteId, {
+      drawingKey: saved.drawingKey || params.drawingKey,
+      modelKey: saved.modelKey || params.modelKey,
+    }).catch((purgeError) => {
       logger.warn(`Failed to purge quote objects after upload error (${quoteId})`, purgeError);
     });
     await prisma.quoteRequest.delete({ where: { id: quoteId } }).catch(() => undefined);
@@ -122,9 +208,21 @@ export async function streamQuoteAttachment(
   });
 }
 
-export async function purgeQuoteStorage(organizationId: string, quoteId: string): Promise<void> {
+export async function purgeQuoteStorage(
+  organizationId: string,
+  quoteId: string,
+  keys?: { drawingKey?: string | null; modelKey?: string | null }
+): Promise<void> {
   const prefix = `quotes/${organizationId}/${quoteId}`;
   const deleted = await storageService.deletePrefix(prefix);
+  for (const key of [keys?.drawingKey, keys?.modelKey]) {
+    if (!key || key.startsWith(prefix)) continue;
+    try {
+      await storageService.deleteFile(key);
+    } catch (error) {
+      logger.warn(`Failed to delete quote object ${key}`, error);
+    }
+  }
   if (deleted > 0) logger.info(`Purged ${deleted} quote object(s) under ${prefix}`);
 }
 

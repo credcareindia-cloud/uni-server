@@ -7,6 +7,7 @@ import { resolvePermissions } from '../auth/permissions.js';
 import { logger } from '../utils/logger.js';
 import {
   attachQuoteFiles,
+  createQuoteUploadUrl,
   purgeQuoteStorage,
   promoteQuoteDrawingToProject,
   streamQuoteAttachment,
@@ -37,6 +38,17 @@ function readFields(body: Record<string, unknown>) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw createApiError('A valid email is required', 400);
   if (projectName.length < 2) throw createApiError('Project name is required', 400);
   return { name, email, projectName, note };
+}
+
+async function receivingOrganization() {
+  const organizations = await prisma.organization.findMany({
+    include: { _count: { select: { users: true } } },
+  });
+  const organization = organizations
+    .filter((item) => item._count.users > 0)
+    .sort((a, b) => b._count.users - a._count.users)[0];
+  if (!organization) throw createApiError('No workspace is ready to receive quotes yet', 503);
+  return organization;
 }
 
 async function staffUser(req: AuthenticatedRequest) {
@@ -84,23 +96,41 @@ function toJson(row: {
   };
 }
 
+/** Browser asks for a short-lived PUT URL, uploads straight to S3/MinIO, then POSTs the key with the quote. */
+router.post('/presign', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const filename = String(body.filename || '').trim();
+  const contentType = String(body.contentType || '').trim();
+  const sizeBytes = Number(body.sizeBytes);
+  const kind = body.kind === 'model' ? 'model' as const : 'drawing' as const;
+  if (!filename) throw createApiError('Filename is required', 400);
+
+  const organization = await receivingOrganization();
+  const upload = await createQuoteUploadUrl({
+    organizationId: organization.id,
+    kind,
+    filename,
+    contentType,
+    sizeBytes,
+  });
+  res.json(upload);
+}));
+
 router.post('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const fields = readFields(req.body || {});
   const drawing = one(req.files?.drawing as Uploaded | Uploaded[] | undefined);
   const model = one(req.files?.model as Uploaded | Uploaded[] | undefined);
+  const drawingKey = String(req.body?.drawingKey || '').trim() || undefined;
+  const drawingName = String(req.body?.drawingName || '').trim() || undefined;
+  const modelKey = String(req.body?.modelKey || '').trim() || undefined;
+  const modelName = String(req.body?.modelName || '').trim() || undefined;
   // The drawing is optional: the marketing site sends template quotes, contact messages and
   // newsletter sign-ups here too, and those describe the request in the note instead.
   if (drawing && !DRAWING_EXT.has(extOf(drawing.name))) throw createApiError('Drawing must be a PDF, image, DWG, or DXF', 400);
   if (model && !MODEL_EXT.has(extOf(model.name))) throw createApiError('The 3D model must be an IFC file', 400);
   if (!fields.note) throw createApiError('Add a note describing the request', 400);
 
-  const organizations = await prisma.organization.findMany({
-    include: { _count: { select: { users: true } } },
-  });
-  const organization = organizations
-    .filter((item) => item._count.users > 0)
-    .sort((a, b) => b._count.users - a._count.users)[0];
-  if (!organization) throw createApiError('No workspace is ready to receive quotes yet', 503);
+  const organization = await receivingOrganization();
 
   const created = await prisma.quoteRequest.create({
     data: {
@@ -118,6 +148,10 @@ router.post('/', asyncHandler(async (req: AuthenticatedRequest, res: Response) =
     quoteId: created.id,
     drawing,
     model,
+    drawingKey,
+    drawingName,
+    modelKey,
+    modelName,
   });
 
   const quote = await prisma.quoteRequest.update({
@@ -245,7 +279,10 @@ router.delete('/:id', asyncHandler(async (req: AuthenticatedRequest, res: Respon
 
   await deleteStartedWork(user.organizationId, quote.projectId, quote.estimateId);
   await prisma.quoteRequest.delete({ where: { id: quote.id } });
-  await purgeQuoteStorage(user.organizationId, quote.id).catch((error) => {
+  await purgeQuoteStorage(user.organizationId, quote.id, {
+    drawingKey: quote.drawingKey,
+    modelKey: quote.modelKey,
+  }).catch((error) => {
     logger.warn(`Quote ${quote.id} DB row deleted but S3 purge failed`, error);
   });
   logger.info(`Quote ${quote.id} deleted by ${user.id}`);
