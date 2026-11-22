@@ -94,3 +94,6 @@ test-rbac.js
 create-admin.js
 test-rbac-detailed.js
 
+
+# Demo/marketing kit (IFC generators, publish + seed scripts) lives on the dev machine only
+/demo/
